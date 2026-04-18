@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# ctx CLI 엔트리 — location/context 스위치.
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+. "$_dir/_lc_common.sh"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$(_lc_pick_python "$_root")"
+exec "$PY" -m ctx.cli "$@"

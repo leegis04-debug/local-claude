@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent — 매일 새벽 3시 미니 PC gstar-data → Dropbox 백업.
+     설치:
+       cp bin/g-dropbox-backup.plist ~/Library/LaunchAgents/com.local-claude.g-dropbox-backup.plist
+       launchctl load ~/Library/LaunchAgents/com.local-claude.g-dropbox-backup.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local-claude.g-dropbox-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>exec "$HOME/workspace/local-claude/bin/g-dropbox-backup.sh"</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/g-dropbox-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/g-dropbox-backup.err</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

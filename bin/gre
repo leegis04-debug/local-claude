@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# gre — 연구개발 P축 진입점 (research 트랙). 기존 ~/.local/bin/re 와 병존.
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+# shellcheck source=./_lc_common.sh
+. "$_dir/_lc_common.sh"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$(_lc_pick_python "$_root")"
+
+stage=""
+project=""
+args=()
+while (( $# > 0 )); do
+  case "$1" in
+    --project|-P) project="$2"; shift 2 ;;
+    --project=*)  project="${1#--project=}"; shift ;;
+    --help|-h)
+      echo "gre — research 트랙 (idea|structure|spec|experiment-plan|proposal|final-doc|lab-note|...)" >&2
+      echo "사용: gre <stage> \"<input>\" [--project <dir>]" >&2
+      exit 0 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+stage="${args[0]:-}"
+[ -z "$stage" ] && { echo "사용: gre <stage> ..."; exit 1; }
+input="${args[*]:1}"
+project="${project:-${RE_PROJECT_DIR:-$PWD}}"
+
+cmd=("$PY" -m gstar.cli.main project run research "$stage" --project "$project")
+[ -n "$input" ] && cmd+=(--input "$input")
+exec "${cmd[@]}"

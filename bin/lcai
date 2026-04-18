@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# local-claude CLI 엔트리 — python 모듈로 위임.
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+# shellcheck source=./_lc_common.sh
+. "$_dir/_lc_common.sh"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$(_lc_pick_python "$_root")"
+exec "$PY" -m local_claude.cli "$@"

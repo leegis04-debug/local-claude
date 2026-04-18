@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# re-shim — re wrapper 용. jw-shim 과 동일 패턴.
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="${LC_PYTHON:-python3}"
+if [ -x "$_root/.venv/bin/python3" ]; then PY="$_root/.venv/bin/python3"; fi
+
+BACKEND="$("$PY" -m ctx.cli get re.rag_backend 2>/dev/null || echo "gateway")"
+G_URL="$("$PY" -m ctx.cli get gstar.server_url 2>/dev/null || echo "http://100.79.251.53:9999")"
+GW_URL="$("$PY" -m ctx.cli get network.gateway_url 2>/dev/null || echo "http://100.79.251.53:8000")"
+
+case "$BACKEND" in
+  g)     export GATEWAY_URL="$G_URL"  LC_GATEWAY_URL="$G_URL"  RE_RAG_BACKEND=g ;;
+  both)  export GATEWAY_URL="$G_URL"  LC_GATEWAY_URL="$G_URL"  RE_RAG_BACKEND=both ;;
+  *)     export GATEWAY_URL="$GW_URL" LC_GATEWAY_URL="$GW_URL" RE_RAG_BACKEND=gateway ;;
+esac
+
+ORIG_PATH="${PATH//"$_dir":/}"
+ORIG_PATH="${ORIG_PATH//:"$_dir"/}"
+ORIG="$(PATH="$ORIG_PATH" command -v re 2>/dev/null || true)"
+[ -z "$ORIG" ] && [ -x "$HOME/.local/bin/re" ] && ORIG="$HOME/.local/bin/re"
+if [ -z "$ORIG" ]; then
+  echo "re-shim: 원본 re 를 찾을 수 없음" >&2
+  exit 127
+fi
+exec "$ORIG" "$@"

@@ -1,0 +1,27 @@
+# 미니 PC(100.79.251.53) 에서:
+#   cd /opt/gstar/local-claude
+#   docker compose -f deploy/gserve/docker-compose.yml up -d
+#
+# 볼륨 경로는 DSM/Synology 이 아니라 미니 PC 의 로컬 경로. DS218 은 별도 Hyper Backup.
+
+services:
+  g-serve:
+    build:
+      context: ../..
+      dockerfile: deploy/gserve/Dockerfile
+    image: gstar-serve:latest
+    container_name: g-serve
+    restart: unless-stopped
+    # host network 사용 이유: NordVPN/Meshnet + Docker iptables 충돌 회피.
+    # 호스트의 9999 에 직접 바인딩 → ufw "Anywhere on nordlynx ALLOW" 룰이 바로 적용.
+    network_mode: host
+    volumes:
+      - ${GSTAR_DATA_DIR:-./gstar-data}:/app/state
+    environment:
+      GSTAR_HOME: /app/state
+      TZ: Asia/Seoul
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9999/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

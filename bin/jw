@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# local-claude shim: ~/.local/bin/jw 에 perf/state 훅을 감싸 위임한다.
+set -u
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_lc_common.sh
+. "$_dir/_lc_common.sh"
+_lc_invoke jw "$@"
+exit $?

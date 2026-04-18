@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# gcode — 코딩 트랙 P축 진입점. `g project run coding <stage>` 의 얇은 shim.
+# 사용: gcode <stage> "<input>" [--project <dir>]
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+# shellcheck source=./_lc_common.sh
+. "$_dir/_lc_common.sh"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$(_lc_pick_python "$_root")"
+
+stage=""
+project=""
+input=""
+args=()
+while (( $# > 0 )); do
+  case "$1" in
+    --project|-P) project="$2"; shift 2 ;;
+    --project=*)  project="${1#--project=}"; shift ;;
+    --help|-h)
+      echo "gcode — 코딩 트랙 (explore|plan|implement|test|review)" >&2
+      echo "사용: gcode <stage> \"<input>\" [--project <dir>]" >&2
+      exit 0 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+stage="${args[0]:-}"
+[ -z "$stage" ] && { echo "사용: gcode <stage> ..."; exit 1; }
+input="${args[*]:1}"
+project="${project:-$PWD}"
+
+cmd=("$PY" -m gstar.cli.main project run coding "$stage" --project "$project")
+[ -n "$input" ] && cmd+=(--input "$input")
+exec "${cmd[@]}"

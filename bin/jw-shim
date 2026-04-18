@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# jw-shim — jw wrapper 의 RAG backend 를 env 로 스위치.
+# 원본 ~/.local/bin/jw 는 수정 없이 실행. ctx 의 jw.rag_backend 를 읽어 GATEWAY_URL 주입.
+# 사용: jw-shim <subcmd> <args...>  (ctx 에 jw.rag_backend 없으면 기존 동작 유지)
+
+set -eu
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="${LC_PYTHON:-python3}"
+if [ -x "$_root/.venv/bin/python3" ]; then PY="$_root/.venv/bin/python3"; fi
+
+BACKEND="$("$PY" -m ctx.cli get jw.rag_backend 2>/dev/null || echo "gateway")"
+G_URL="$("$PY" -m ctx.cli get gstar.server_url 2>/dev/null || echo "http://100.79.251.53:9999")"
+GW_URL="$("$PY" -m ctx.cli get network.gateway_url 2>/dev/null || echo "http://100.79.251.53:8000")"
+
+case "$BACKEND" in
+  g)     export GATEWAY_URL="$G_URL"  LC_GATEWAY_URL="$G_URL"  JW_RAG_BACKEND=g ;;
+  both)  export GATEWAY_URL="$G_URL"  LC_GATEWAY_URL="$G_URL"  JW_RAG_BACKEND=both ;;
+  *)     export GATEWAY_URL="$GW_URL" LC_GATEWAY_URL="$GW_URL" JW_RAG_BACKEND=gateway ;;
+esac
+
+# 원본 jw 찾기 (PATH 에서 shim 제외)
+ORIG_PATH="${PATH//"$_dir":/}"
+ORIG_PATH="${ORIG_PATH//:"$_dir"/}"
+ORIG="$(PATH="$ORIG_PATH" command -v jw 2>/dev/null || true)"
+if [ -z "$ORIG" ] && [ -x "$HOME/.local/bin/jw" ]; then
+  ORIG="$HOME/.local/bin/jw"
+fi
+if [ -z "$ORIG" ]; then
+  echo "jw-shim: 원본 jw 를 찾을 수 없음" >&2
+  exit 127
+fi
+
+exec "$ORIG" "$@"
