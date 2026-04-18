@@ -1,15 +1,32 @@
-"""Ollama /api/chat 저토큰 래퍼.
+"""Ollama /api/chat 래퍼.
 
-D 관점: Gemma 는 생성기가 아니라 "선택기". 긴 서술 대신 예/아니오·점수·ID만 뽑는다.
-기본 모델: 맥북 e4b (http://localhost:11434). 네트워크 실패 시 명확한 예외.
+아키텍처:
+- **작성 주체 (생성기)**: 4090 서버 (http://100.105.221.243:11434, 모델 `gemma4:a4b` 등).
+  P축 projection 의 summarizer·renderer·coherence_gate 에서 호출.
+- **선택기 (짧은 예/아니오)**: 로컬 또는 4090. Selector loop 의 judge.
+- **G 운영 주체**: 미니 PC (http://100.79.251.53:9999, g-serve HTTP).
+
+기본값은 환경변수로 override 가능:
+- `OLLAMA_HOST`      — 전체 기본 Ollama 호스트
+- `GP_OLLAMA_HOST`   — projection 전용 override (작성 주체 = 4090)
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
+
+
+_DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+_PROJECTION_OLLAMA_HOST = os.environ.get("GP_OLLAMA_HOST", "http://100.105.221.243:11434")
+
+
+def projection_host() -> str:
+    """Projection(생성) 전용 Ollama 엔드포인트. 기본: 4090."""
+    return os.environ.get("GP_OLLAMA_HOST", _PROJECTION_OLLAMA_HOST)
 
 
 class Judge(Protocol):
@@ -20,7 +37,7 @@ class Judge(Protocol):
 
 @dataclass
 class OllamaChatClient:
-    host: str = "http://localhost:11434"
+    host: str = _DEFAULT_OLLAMA_HOST
     model: str = "gemma4:e4b"
     timeout_s: float = 30.0
     num_predict: int = 64

@@ -50,16 +50,41 @@ def _call_ollama(
     sec: SectionInput, role: StageRole, model: str
 ) -> tuple[str, str]:
     try:
-        from gstar.selector.gemma_client import OllamaChatClient
+        from gstar.selector.gemma_client import OllamaChatClient, projection_host
 
-        client = OllamaChatClient(model=model)
+        max_words = sec.section.max_words or 2000
+        num_predict = min(8000, max(512, int(max_words * 2.2)))
+        client = OllamaChatClient(
+            host=projection_host(),
+            model=model,
+            timeout_s=180.0,
+            num_predict=num_predict,
+            temperature=0.3,
+        )
     except Exception as e:
         return "", f"ollama unavailable: {e}"
 
-    system = role.system_prompt or "당신은 문서 작성자. 구체적이고 정량적으로."
+    base_system = role.system_prompt or "당신은 전문 문서 작성자."
+    system = (
+        f"{base_system}\n"
+        "\n"
+        "[작성 규칙 — 엄수]\n"
+        "1. 섹션 본문에 구체 수치·출처·경쟁사·차별점을 포함하라.\n"
+        "2. <context> 내 <prev_stages>, <facts>, <entities>, <related> 블록은 **참고 자료**다. "
+        "태그 이름이나 블록 내용을 본문에 그대로 복사·재출력하지 마라.\n"
+        "3. 양식 지시문 (※·□ 시작, '필수 기재', '동의합니다', '[별지]' 등) 을 본문에 포함하지 마라.\n"
+        "4. '이전 단계 요약', '확정 사실', '관련 엔티티' 같은 메타 제목을 본문에 쓰지 마라.\n"
+        "5. 섹션 지침(<task>) 에 충실하게, 자체 논리 흐름으로 서술하라.\n"
+        "6. 분량 범위를 지키고, 목록보다 서사 단락을 선호하되 수치는 정확히.\n"
+    )
     prompt = (
         f"{sec.render()}\n\n"
-        f"==== 위 섹션 '{sec.section.title}' 을 {sec.section.min_words}-{sec.section.max_words}자 범위로 작성하세요. ===="
+        f"<output_instruction>\n"
+        f"위 <task> 지침에 따라 '{sec.section.title}' 섹션 본문을 "
+        f"{sec.section.min_words}~{sec.section.max_words}자로 작성. "
+        "헤더(##)는 직접 쓰지 말 것 (merge 단계에서 자동 삽입). "
+        "본문만 출력. 메타설명·태그·블록제목 금지.\n"
+        f"</output_instruction>"
     )
     try:
         out = client.judge(system=system, prompt=prompt)

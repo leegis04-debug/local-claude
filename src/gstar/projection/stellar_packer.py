@@ -25,23 +25,40 @@ class SectionInput:
     max_chars: int = 2500
 
     def render(self) -> str:
+        """LLM 프롬프트용 컨텍스트 블록.
+
+        <context>...</context> 로 명시 격리. LLM 에게 '참고만, 재출력 금지' 신호.
+        """
         parts = [
-            f"=== 섹션 가이드 ===",
-            f"제목: {self.section.title}",
-            f"지침: {self.guide}",
+            "<task>",
+            f"섹션 제목: {self.section.title}",
+            f"작성 지침: {self.guide}",
+            "</task>",
+            "",
+            "<context>",
+            "[아래 자료는 참고용. 섹션 본문에 그대로 복사하지 말고, 논리·수치·출처를 재구성하라.]",
         ]
         if self.prev_summary_text:
-            parts.append("\n=== 이전 단계 요약 ===")
+            parts.append("")
+            parts.append("<prev_stages>")
             parts.append(self.prev_summary_text)
+            parts.append("</prev_stages>")
         if self.fact_block:
-            parts.append("\n=== 확정 사실 ===")
+            parts.append("")
+            parts.append("<facts>  <!-- 검증된 수치·결정·제약. 본문에 녹여서 활용 -->")
             parts.append(self.fact_block)
+            parts.append("</facts>")
         if self.entity_block:
-            parts.append("\n=== 관련 엔티티 ===")
+            parts.append("")
+            parts.append("<entities>  <!-- 주요 인물·기관·기술. 구체성 확보용 -->")
             parts.append(self.entity_block)
+            parts.append("</entities>")
         if self.retrieval_text:
-            parts.append("\n=== 관련 근거 (G 검색) ===")
+            parts.append("")
+            parts.append("<related>  <!-- 유사 사례·근거 -->")
             parts.append(self.retrieval_text)
+            parts.append("</related>")
+        parts.append("</context>")
         text = "\n".join(parts)
         if len(text) > self.max_chars:
             return text[: self.max_chars - 3] + "..."

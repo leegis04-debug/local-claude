@@ -40,7 +40,7 @@ class ProposalTask(TaskDefinition):
         EntityKind.DOCUMENT,
     ]
     fact_kinds = ["metric", "decision", "constraint", "claim"]
-    default_ollama_model = "gemma3:4b-it-qat"
+    default_ollama_model = "gemma4:26b-a4b-it-q4_K_M"
 
     _SCHEMAS: dict[str, list[SectionSpec]] = {
         "idea": IDEA_3,

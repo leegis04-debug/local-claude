@@ -21,7 +21,7 @@ class StageRole:
     summary_depth: SummaryDepth
     section_schema: str                      # template.py 의 스키마 이름
     coherence_retries: int
-    ollama_model: str = "gemma3:4b-it-qat"
+    ollama_model: str = "gemma4:26b-a4b-it-q4_K_M"
     system_prompt: str = ""
     max_prompt_chars: int = 4500
     required_fact_kinds: list[str] = field(default_factory=list)
@@ -165,7 +165,7 @@ CODING_ROLES: dict[str, StageRole] = {
         summary_depth="deep",
         section_schema="implement",
         coherence_retries=2,
-        ollama_model="gemma3:4b-it-qat",
+        ollama_model="gemma4:26b-a4b-it-q4_K_M",
         system_prompt=(
             "senior engineer. 반드시 plan 의 시그니처와 일치시키고 기존 import 관례를 따른다. "
             "코드만 출력, 설명 최소."

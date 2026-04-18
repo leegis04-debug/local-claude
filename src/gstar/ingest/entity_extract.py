@@ -80,7 +80,65 @@ _STOPWORDS = {
     "방법",
     "결과",
     "예를",
+    "신청인",
+    "신청",
+    "제출",
+    "작성",
+    "기재",
+    "필수",
+    "선정",
+    "사항",
+    "담당자",
+    "담당",
+    "관련",
+    "지원사업",
+    "지원",
+    "사업",
+    "기업",
+    "기관",
+    "회사",
+    "대상",
+    "성숙도",
+    "투자계획",
+    "투자",
+    "계획",
+    "계획서",
+    "구성",
+    "집행",
+    "집행계획",
+    "기준",
+    "단가",
+    "일정",
+    "정보",
+    "자료",
+    "항목",
+    "목록",
+    "구분",
+    "내역",
+    "수행",
+    "참여",
+    "주관",
+    "과제",
+    "기술",
+    "기타",
+    "기타사항",
+    "조치",
+    "확인",
+    "요구",
+    "검토",
+    "평가",
+    "진행",
+    "완료",
+    "예정",
+    "포함",
+    "제외",
+    "가능",
+    "필요",
+    "사용",
+    "이용",
 }
+
+_ENTITY_NUMERIC_NOISE = re.compile(r"^\d+$|^0+$|^-+$")
 
 
 @dataclass
@@ -168,17 +226,21 @@ def extract_candidates_morph(
             toks = normalize_join_adjacent(toks)
             for t in toks:
                 if t.pos in ("NNP", "NNG") and len(t.lemma) >= 2 and t.lemma not in _STOPWORDS:
-                    names.add(t.lemma)
+                    if not _ENTITY_NUMERIC_NOISE.match(t.lemma):
+                        names.add(t.lemma)
 
         for m in _KR_CHUNK.finditer(fact.text):
             stripped = _strip_kr_postposition(m.group(0))
             if stripped and stripped not in _STOPWORDS and len(stripped) >= 2:
-                names.add(stripped)
+                if not _ENTITY_NUMERIC_NOISE.match(stripped):
+                    names.add(stripped)
 
         for m in _EN_PROPER.finditer(fact.text):
-            names.add(m.group(0))
+            if not _ENTITY_NUMERIC_NOISE.match(m.group(0)):
+                names.add(m.group(0))
         for m in _EN_ACRONYM.finditer(fact.text):
-            names.add(m.group(0))
+            if not _ENTITY_NUMERIC_NOISE.match(m.group(0)):
+                names.add(m.group(0))
 
         for name in names:
             raw_counts[name] += 1

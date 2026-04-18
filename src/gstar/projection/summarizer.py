@@ -74,6 +74,45 @@ _FACT_CONSTRAINT_RE = re.compile(
     r"(제약|필수|금지|필요하|해야 한|해야 함|반드시|하지 않)", re.IGNORECASE
 )
 
+_FORM_BOILERPLATE_PREFIXES = ("※", "□", "○", "●", "◆", "▶", "▷", "※ ", "□ ")
+_FORM_CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮"
+
+_FORM_BOILERPLATE_PATTERNS = (
+    re.compile(r"필수\s*기재"),
+    re.compile(r"지정\s*및\s*인원"),
+    re.compile(r"작성\s*및\s*제출"),
+    re.compile(r"제출해야\s*함"),
+    re.compile(r"신청\s*서류"),
+    re.compile(r"동의합니다"),
+    re.compile(r"제재\s*조치"),
+    re.compile(r"참여\s*제한"),
+    re.compile(r"허위\s*사실"),
+    re.compile(r"선정\s*취소"),
+    re.compile(r"^\[별지"),
+    re.compile(r"^별첨"),
+    re.compile(r"사업계획서\s*양식"),
+    re.compile(r"^기\s*재"),
+    re.compile(r"^기\s*재"),
+)
+
+
+def _is_form_boilerplate(line: str) -> bool:
+    """양식 지시문 / 상투구 판별."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped[0] in _FORM_BOILERPLATE_PREFIXES or stripped.startswith(_FORM_BOILERPLATE_PREFIXES):
+        return True
+    if stripped[0] in _FORM_CIRCLED_DIGITS:
+        return True
+    for pat in _FORM_BOILERPLATE_PATTERNS:
+        if pat.search(stripped):
+            return True
+    non_alnum = sum(1 for c in stripped if not (c.isalnum() or c.isspace()))
+    if non_alnum > len(stripped) * 0.4:
+        return True
+    return False
+
 
 def _content_hash_for_text(stage: str, text: str) -> str:
     """노드 기반 hash 는 과함. 안정 해시: sha256(stage + text[:1000])."""
@@ -87,7 +126,7 @@ def _content_hash_for_text(stage: str, text: str) -> str:
 
 
 def _fallback_extract_facts(artifact: StageArtifact, track: str = "") -> list[Fact]:
-    """Ollama 없이 규칙 기반으로 fact 추출. 문장 단위."""
+    """Ollama 없이 규칙 기반으로 fact 추출. 문장 단위. 양식 상투구 제외."""
     facts: list[Fact] = []
     src_hash = _content_hash_for_text(artifact.stage, artifact.text)
     seen_texts: set[str] = set()
@@ -96,6 +135,8 @@ def _fallback_extract_facts(artifact: StageArtifact, track: str = "") -> list[Fa
         if not line or len(line) < 10 or len(line) > 300:
             continue
         if line in seen_texts:
+            continue
+        if _is_form_boilerplate(line):
             continue
         kind: str | None = None
         if _FACT_METRIC_RE.search(line):
@@ -135,22 +176,38 @@ def _call_ollama_extract(
     target_kinds: list[str],
 ) -> list[Fact] | None:
     try:
-        from gstar.selector.gemma_client import OllamaChatClient
+        from gstar.selector.gemma_client import OllamaChatClient, projection_host
 
-        client = OllamaChatClient(model=role.ollama_model)
+        client = OllamaChatClient(
+            host=projection_host(),
+            model=role.ollama_model,
+            timeout_s=180.0,
+            num_predict=2048,
+            temperature=0.2,
+        )
     except Exception:
         return None
 
     system = (
-        "당신은 문서에서 사실을 JSON 배열로 추출하는 엔진이다. "
+        "당신은 문서에서 실질 사실만 JSON 배열로 추출한다. "
         "각 fact 는 {text, kind} 키만 갖는다. "
         f"kind 는 다음 중 하나: {', '.join(target_kinds)}. "
-        "배열만 출력. 설명 금지."
+        "배열만 출력. 설명 금지.\n"
+        "\n"
+        "[제외 대상 — 추출하지 마라]\n"
+        "- 양식 지시문 (※·□·○ 로 시작하거나 '필수 기재', '작성 및 제출', '제출해야 함', '동의합니다' 포함)\n"
+        "- 서식 상투구 ([별지], '기재', '신청 서류' 등)\n"
+        "- 공고·양식의 메타 설명 (지원 대상·절차·일정 같은 추상 문구)\n"
+        "\n"
+        "[추출 대상 — 사업·기술·수치 중심]\n"
+        "- 수치·지표 (%, mAP, 매출, 예산 등 구체 숫자 포함)\n"
+        "- 전략 결정 (채택·선정·확정된 기술·방법·파트너)\n"
+        "- 실질 제약 (기술·시장·법적 한계)\n"
     )
     prompt = (
         f"단계: {artifact.stage}\n"
         f"본문 (일부):\n{artifact.text[:3500]}\n\n"
-        "JSON 배열:"
+        "JSON 배열 (양식 상투구 제외, 실질 사실만):"
     )
     try:
         raw = client.judge(system=system, prompt=prompt)
@@ -189,9 +246,15 @@ def _call_ollama_extract(
 
 def _call_ollama_skeleton(artifact: StageArtifact, role: StageRole) -> str | None:
     try:
-        from gstar.selector.gemma_client import OllamaChatClient
+        from gstar.selector.gemma_client import OllamaChatClient, projection_host
 
-        client = OllamaChatClient(model=role.ollama_model)
+        client = OllamaChatClient(
+            host=projection_host(),
+            model=role.ollama_model,
+            timeout_s=180.0,
+            num_predict=2048,
+            temperature=0.2,
+        )
     except Exception:
         return None
     system = "당신은 요약가. 400자 이내 핵심 내러티브로 요약. 수치·고유명사 보존."

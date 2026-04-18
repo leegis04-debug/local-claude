@@ -128,12 +128,18 @@ def _check_citation_coverage(
 def _call_ollama_critique(
     text: str,
     registry_facts: list[Fact],
-    model: str = "gemma3:4b-it-qat",
+    model: str = "gemma4:26b-a4b-it-q4_K_M",
 ) -> list[Violation]:
     try:
-        from gstar.selector.gemma_client import OllamaChatClient
+        from gstar.selector.gemma_client import OllamaChatClient, projection_host
 
-        client = OllamaChatClient(model=model)
+        client = OllamaChatClient(
+            host=projection_host(),
+            model=model,
+            timeout_s=60.0,
+            num_predict=512,
+            temperature=0.1,
+        )
     except Exception:
         return []
     fact_lines = "\n".join(f"- {f.kind}: {f.text}" for f in registry_facts[:15])
@@ -166,7 +172,7 @@ def check(
     required_fact_kinds: list[str] | None = None,
     use_ollama: bool = False,
     coherence_mode: str = "strict",
-    ollama_model: str = "gemma3:4b-it-qat",
+    ollama_model: str = "gemma4:26b-a4b-it-q4_K_M",
 ) -> Verdict:
     """텍스트 → Verdict (ok + violations)."""
     if coherence_mode == "off":

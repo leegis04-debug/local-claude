@@ -38,7 +38,7 @@ class TaskDefinition(ABC):
     stages: ClassVar[list[str]] = []
     entity_kinds: ClassVar[list[EntityKind]] = []
     fact_kinds: ClassVar[list[str]] = ["decision", "metric", "constraint"]
-    default_ollama_model: ClassVar[str] = "gemma3:4b-it-qat"
+    default_ollama_model: ClassVar[str] = "gemma4:26b-a4b-it-q4_K_M"
 
     @abstractmethod
     def stage_role(self, stage: str) -> StageRole:  # pragma: no cover

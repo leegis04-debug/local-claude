@@ -22,7 +22,7 @@ class CodingTask(TaskDefinition):
         EntityKind.TECHNOLOGY,
     ]
     fact_kinds = ["decision", "constraint", "api_sig", "test_case"]
-    default_ollama_model = "gemma3:4b-it-qat"
+    default_ollama_model = "gemma4:26b-a4b-it-q4_K_M"
 
     def stage_role(self, stage: str) -> StageRole:
         return CODING_ROLES.get(stage, DEFAULT_ROLE)
