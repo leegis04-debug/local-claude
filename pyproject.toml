@@ -41,6 +41,11 @@ fetch = [
 entity = [
     "kiwipiepy>=0.17",
 ]
+input = [
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+]
 
 [project.scripts]
 lcai = "local_claude.cli:main"
