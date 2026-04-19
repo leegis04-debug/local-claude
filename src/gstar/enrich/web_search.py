@@ -30,6 +30,16 @@ async def web_search(
         return await _firecrawl_search(query, top_k)
     if backend == "tavily":
         return await _tavily_search(query, top_k)
+    if backend == "self_made" or backend == "self":
+        from gstar.enrich.self_made import self_made_search
+
+        hits = await self_made_search(query, top_k=top_k)
+        return [h.to_dict() for h in hits]
+    if backend == "claude_style" or backend == "search_and_fetch":
+        from gstar.enrich.self_made import search_and_fetch
+
+        hits = await search_and_fetch(query, top_k=top_k)
+        return [h.to_dict() for h in hits]
     if backend == "naver" or backend == "playwright_naver":
         return await _naver_playwright(query, top_k)
     if backend == "google" or backend == "playwright_google":
