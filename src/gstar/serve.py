@@ -636,3 +636,130 @@ def ingest_neo4j(req: Neo4jIngestRequest):
         edges_created=result["edges_created"],
         edges_skipped=result["edges_skipped"],
     )
+
+
+# -------- /worker/{pause,resume,status,tick} (Phase B2) --------
+
+
+class WorkerStatus(BaseModel):
+    paused: bool
+    pause_flag_path: str
+    last_tick_id: str | None = None
+    last_tick_started_at: str | None = None
+    last_tick_finished_at: str | None = None
+    last_tick_status: str | None = None
+    last_tick_duration_ms: int | None = None
+
+
+class TickRequest(BaseModel):
+    min_community_size: int = 3
+    project_ids: list[str] | None = None
+    mode: str = "per_project"           # "per_project" | "global"
+
+
+@app.post("/worker/pause")
+def worker_pause():
+    from gstar.worker.cycle import set_paused
+
+    set_paused(True)
+    return {"paused": True}
+
+
+@app.post("/worker/resume")
+def worker_resume():
+    from gstar.worker.cycle import set_paused
+
+    set_paused(False)
+    return {"paused": False}
+
+
+@app.get("/worker/status", response_model=WorkerStatus)
+def worker_status():
+    from gstar.worker.cycle import is_paused, pause_flag_path
+
+    s = get_state()
+    last = {
+        "id": None,
+        "started_at": None,
+        "finished_at": None,
+        "status": None,
+        "duration_ms": None,
+    }
+    with s.store.lock:
+        try:
+            row = s.store.conn.execute(
+                "SELECT id, started_at, finished_at, status, duration_ms "
+                "FROM worker_tick ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                last = {
+                    "id": row[0],
+                    "started_at": row[1].isoformat() if row[1] else None,
+                    "finished_at": row[2].isoformat() if row[2] else None,
+                    "status": row[3],
+                    "duration_ms": row[4],
+                }
+        except Exception:
+            pass
+    return WorkerStatus(
+        paused=is_paused(),
+        pause_flag_path=str(pause_flag_path()),
+        last_tick_id=last["id"],
+        last_tick_started_at=last["started_at"],
+        last_tick_finished_at=last["finished_at"],
+        last_tick_status=last["status"],
+        last_tick_duration_ms=last["duration_ms"],
+    )
+
+
+@app.post("/worker/tick")
+def worker_tick(req: TickRequest):
+    """한 tick 을 on-demand 로 실행. 상주 워커 없이도 커뮤니티 재계산 가능."""
+    from gstar.worker.cycle import run_cycle
+
+    s = get_state()
+    try:
+        rep = run_cycle(
+            s.store,
+            min_community_size=req.min_community_size,
+            project_ids=req.project_ids,
+            mode=req.mode,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"tick failed: {exc}")
+    return rep.to_json()
+
+
+@app.get("/communities")
+def list_communities(project_id: str | None = None, limit: int = 50):
+    """community_canonical 최근 목록."""
+    s = get_state()
+    with s.store.lock:
+        try:
+            if project_id:
+                rows = s.store.conn.execute(
+                    "SELECT id, project_id, algorithm, size, label, created_at "
+                    "FROM community_canonical WHERE project_id=? "
+                    "ORDER BY created_at DESC, size DESC LIMIT ?",
+                    [project_id, limit],
+                ).fetchall()
+            else:
+                rows = s.store.conn.execute(
+                    "SELECT id, project_id, algorithm, size, label, created_at "
+                    "FROM community_canonical "
+                    "ORDER BY created_at DESC, size DESC LIMIT ?",
+                    [limit],
+                ).fetchall()
+        except Exception as exc:
+            raise HTTPException(500, f"communities failed: {exc}")
+    return [
+        {
+            "id": r[0],
+            "project_id": r[1],
+            "algorithm": r[2],
+            "size": r[3],
+            "label": r[4],
+            "created_at": r[5].isoformat() if r[5] else None,
+        }
+        for r in rows
+    ]

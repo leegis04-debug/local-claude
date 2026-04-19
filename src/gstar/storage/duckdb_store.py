@@ -17,6 +17,7 @@ from gstar.integrity.hash_chain import compute_content_hash
 from gstar.schema import Cluster, Edge, EmergenceEvent, Goal, Namespace, Node
 
 _MIGRATIONS = Path(__file__).parent / "migrations.sql"
+_MIGRATIONS_V4 = Path(__file__).parent / "migrations_v4.sql"
 
 
 def _to_utc_naive(ts: datetime) -> datetime:
@@ -56,6 +57,8 @@ class DuckStore:
     def _migrate(self) -> None:
         ddl = _MIGRATIONS.read_text(encoding="utf-8")
         self.conn.execute(ddl)
+        if _MIGRATIONS_V4.exists():
+            self.conn.execute(_MIGRATIONS_V4.read_text(encoding="utf-8"))
 
     def close(self) -> None:
         self.conn.close()
