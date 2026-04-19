@@ -228,6 +228,35 @@ def run_cycle(
             except Exception as exc:
                 rep.steps["legacy_bridge"] = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # H9 fine-grained — legacy chunk 를 문장 분해 후 G fact 와 매칭
+        if os.environ.get("LEGACY_FACT_BRIDGE_ENABLED", "off").lower() in {"on", "1", "true"}:
+            try:
+                from gstar.mirror.legacy_fact_bridge import bridge_legacy_to_g_facts
+                fres = bridge_legacy_to_g_facts(store)
+                rep.steps["legacy_fact_bridge"] = {
+                    "chunks_scanned": fres.chunks_scanned,
+                    "sentences_extracted": fres.sentences_extracted,
+                    "matched_high": fres.sentences_matched_high,
+                    "matched_medium": fres.sentences_matched_medium,
+                    "cursor_after": fres.cursor_after,
+                }
+            except Exception as exc:
+                rep.steps["legacy_fact_bridge"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # code_repos 점진 이관 — CODE_REPOS_ENABLED=on 필요 (기본 off)
+        if embedder is not None and os.environ.get("CODE_REPOS_ENABLED", "off").lower() in {"on", "1", "true"}:
+            try:
+                from gstar.worker.code_repos_ingest import ingest_code_repos_batch
+                cres = ingest_code_repos_batch(store, faiss, embedder)
+                rep.steps["code_repos"] = {
+                    "scanned": cres.scanned,
+                    "ingested": cres.ingested,
+                    "errors": cres.errors,
+                    "cursor_after": cres.cursor_after[-60:] if cres.cursor_after else "",
+                }
+            except Exception as exc:
+                rep.steps["code_repos"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         rep.status = "success"
     except Exception as exc:
         rep.status = "failed"
