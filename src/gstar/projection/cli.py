@@ -413,6 +413,54 @@ def verify_cmd(output: Path = typer.Argument(..., exists=True)) -> None:
         store.close()
 
 
+def _run_mode_e(
+    *,
+    track_name: str,
+    stage: str,
+    project_dir: Path,
+    user_input: str,
+    mode: str,
+) -> None:
+    """Phase E pipeline (sv|svr|svrr). Ollama 필요."""
+    from gstar.client import from_env as gclient_from_env
+    from gstar.projection.pipeline_e import run_pipeline
+    from gstar.projection.projector import SectionSpec
+
+    paths = Paths.load()
+    store = DuckStore(paths.db)
+    gclient = gclient_from_env()
+
+    section = SectionSpec(
+        name=stage,
+        instruction=user_input or f"{stage} 단계 섹션 작성",
+        target_tokens=500,
+    )
+    goal = user_input or stage
+
+    rep = run_pipeline(
+        goal=goal,
+        track=track_name,
+        section=section,
+        gclient=gclient,
+        store=store,
+        mode=mode,
+    )
+
+    out_dir = project_dir / f"_mode_{mode}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{stage}.md"
+    if rep.projector is not None:
+        out_path.write_text(rep.projector.text, encoding="utf-8")
+        typer.echo(f"섹션 저장: {out_path}")
+    else:
+        typer.echo(f"[mode={mode}] Projector skip. warnings={rep.warnings}")
+
+    report_path = out_dir / f"{stage}.report.json"
+    import json as _json
+    report_path.write_text(_json.dumps(rep.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
+    typer.echo(f"report: {report_path}")
+
+
 @project_app.command("run")
 def run_cmd(
     track_name: str = typer.Argument(..., help="proposal|research|coding|document"),
@@ -426,8 +474,28 @@ def run_cmd(
         help="strict|loose|off",
     ),
     ollama_model: str = typer.Option(None, "--model"),
+    mode: str = typer.Option(
+        os.environ.get("PROJECTION_MODE", "classic"),
+        "--mode",
+        help="classic|sv|svr|svrr — svrr 은 Selector→Projector→Verifier L1+L2→Reinforce (Phase E4)",
+    ),
 ) -> None:
-    """단일 단계 실행. PREV_CONTEXT 을 summarizer 로 압축하여 섹션 생성."""
+    """단일 단계 실행. PREV_CONTEXT 을 summarizer 로 압축하여 섹션 생성.
+
+    mode=classic (기본) → 기존 renderer 경로.
+    mode=sv|svr|svrr → Phase E pipeline_e.run_pipeline 으로 위임.
+      svrr 이 권장. Gemma Ollama 호출 필요 (SELECTOR_OLLAMA_HOST + GP_OLLAMA_HOST env).
+    """
+    if mode in {"sv", "svr", "svrr"}:
+        _run_mode_e(
+            track_name=track_name,
+            stage=stage,
+            project_dir=project_dir,
+            user_input=user_input,
+            mode=mode,
+        )
+        return
+
     project_dir = Path(project_dir).resolve()
     project_dir.mkdir(parents=True, exist_ok=True)
 

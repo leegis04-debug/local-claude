@@ -1013,3 +1013,171 @@ def list_communities(project_id: str | None = None, limit: int = 50):
         }
         for r in rows
     ]
+
+
+# -------- /trace/* (Phase G — Claude-bracketed trace) --------
+
+
+class TraceRecord(BaseModel):
+    source: str                             # "mcp" | "skill" | "hook"
+    phase: str                              # "open" | "step" | "tool_use" | "decision" | "close" | "session"
+    task_id: str | None = None              # bracket 묶음 id (open 에서 발급)
+    description: str
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    thinking: str | None = None
+    extras: dict[str, Any] | None = None
+
+
+class TraceRecorded(BaseModel):
+    node_id: str
+    task_id: str | None
+
+
+@app.post("/trace/record", response_model=TraceRecorded)
+def trace_record(req: TraceRecord):
+    """Claude 세션 trace 를 G 에 저장. Node(kind='trace') + claude_trace 행 동시 삽입."""
+    s = get_state()
+    node = Node(
+        kind="event",                       # schema 의 Literal 집합 안에 있는 값 (트레이스를 이벤트로 분류)
+        text=f"[{req.phase}] {req.description[:240]}",
+        attrs={"trace_phase": req.phase, "trace_source": req.source, "task_id": req.task_id or ""},
+        source_namespace=os.environ.get("G_TRACE_NS", "claude_traces"),
+    )
+    try:
+        s.store.insert_node(node)
+    except Exception as exc:
+        raise HTTPException(500, f"node insert failed: {exc}")
+
+    # claude_trace 행
+    now = node.created_at
+    inputs_j = json.dumps(req.inputs or {}, ensure_ascii=False, default=str)
+    outputs_j = json.dumps(req.outputs or {}, ensure_ascii=False, default=str)
+    extras_j = json.dumps(req.extras or {}, ensure_ascii=False, default=str)
+    trace_meta_j = json.dumps(
+        {"phase": req.phase, "source": req.source, "task_id": req.task_id},
+        ensure_ascii=False,
+    )
+    with s.store.lock:
+        try:
+            s.store.conn.execute(
+                "INSERT INTO claude_trace "
+                "(id, task_id, bracket_phase, source, description, inputs_json, outputs_json, "
+                " thinking_text, extras_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    node.id,
+                    req.task_id,
+                    req.phase,
+                    req.source,
+                    req.description,
+                    inputs_j,
+                    outputs_j,
+                    req.thinking,
+                    extras_j,
+                    now,
+                ],
+            )
+            s.store.conn.execute(
+                "UPDATE node SET trace_meta_json=? WHERE id=?",
+                [trace_meta_j, node.id],
+            )
+        except Exception as exc:
+            raise HTTPException(500, f"claude_trace insert failed: {exc}")
+
+    # 임베딩 색인 (description 기준) — Selector retrieval 을 위해
+    try:
+        vec = s.embedder.encode([node.text])[0]
+        s.faiss.add(node.id, vec)
+        s.faiss.save()
+    except Exception:
+        pass
+
+    return TraceRecorded(node_id=node.id, task_id=req.task_id)
+
+
+@app.get("/trace/session/{task_id}")
+def trace_session(task_id: str):
+    """특정 task_id 의 bracket 내부 모든 trace 시간순 반환."""
+    s = get_state()
+    with s.store.lock:
+        try:
+            rows = s.store.conn.execute(
+                "SELECT id, task_id, bracket_phase, source, description, "
+                "inputs_json, outputs_json, thinking_text, extras_json, created_at "
+                "FROM claude_trace WHERE task_id=? ORDER BY created_at",
+                [task_id],
+            ).fetchall()
+        except Exception as exc:
+            raise HTTPException(500, f"query failed: {exc}")
+    return [
+        {
+            "id": r[0],
+            "task_id": r[1],
+            "phase": r[2],
+            "source": r[3],
+            "description": r[4],
+            "inputs": _safe_json_loads(r[5]),
+            "outputs": _safe_json_loads(r[6]),
+            "thinking": r[7],
+            "extras": _safe_json_loads(r[8]),
+            "created_at": r[9].isoformat() if r[9] else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/trace/patterns")
+def trace_patterns(goal_like: str = "", top_k: int = 5):
+    """유사 goal 의 절차(procedure) 패턴 반환 — Selector retrieval 용.
+
+    procedure 노드가 아직 없을 수도 있어 trace 노드 중 phase=decision|step 을 fallback.
+    Selector 가 system prompt 삽입용으로 호출.
+    """
+    s = get_state()
+    if not goal_like.strip():
+        return []
+    try:
+        vec = s.embedder.encode([goal_like])[0]
+    except Exception as exc:
+        raise HTTPException(503, f"embedder unavailable: {exc}")
+    hits = s.faiss.search(vec, k=top_k * 4)
+    out: list[dict] = []
+    with s.store.lock:
+        for nid, score in hits:
+            try:
+                row = s.store.conn.execute(
+                    "SELECT id, kind, text, attrs_json FROM node WHERE id=?", [nid]
+                ).fetchone()
+            except Exception:
+                continue
+            if not row:
+                continue
+            if row[1] not in ("procedure", "event"):
+                continue
+            try:
+                attrs = json.loads(row[3]) if row[3] else {}
+            except Exception:
+                attrs = {}
+            out.append(
+                {
+                    "node_id": row[0],
+                    "kind": row[1],
+                    "text": row[2],
+                    "score": float(score),
+                    "phase": attrs.get("trace_phase") or attrs.get("phase"),
+                    "task_id": attrs.get("task_id"),
+                }
+            )
+            if len(out) >= top_k:
+                break
+    return out
+
+
+def _safe_json_loads(s: str | None) -> dict | list | None:
+    if s is None:
+        return None
+    try:
+        return json.loads(s)
+    except Exception:
+        return None

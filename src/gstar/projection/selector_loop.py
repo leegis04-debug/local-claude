@@ -35,6 +35,32 @@ _SYSTEM = (
 )
 
 
+def _fetch_procedure_patterns(gclient, goal: str, top_k: int = 3) -> list[dict]:
+    """Phase G7 — G /trace/patterns 로 유사 goal 의 과거 절차 패턴 retrieval.
+
+    실패해도 Selector 동작을 막지 않음 (빈 list 반환).
+    """
+    try:
+        r = gclient.http.get("/trace/patterns", params={"goal_like": goal, "top_k": top_k})
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _procedure_hint(patterns: list[dict]) -> str:
+    """retrieval 된 procedure/trace 를 system prompt 에 삽입할 힌트로 변환."""
+    if not patterns:
+        return ""
+    lines = ["과거 유사 작업의 절차 패턴 (참고용):"]
+    for i, p in enumerate(patterns[:3], 1):
+        phase = p.get("phase") or p.get("kind") or ""
+        t = (p.get("text") or "")[:100]
+        lines.append(f"  {i}. [{phase}] {t}")
+    return "\n".join(lines)
+
+
 @dataclass
 class SelectorIteration:
     iter: int
@@ -52,11 +78,11 @@ class SelectorResult:
 
 
 def _judge_one(
-    client: OllamaChatClient, goal: str, fact_text: str
+    client: OllamaChatClient, goal: str, fact_text: str, system: str = _SYSTEM
 ) -> bool:
     try:
         out = client.judge(
-            system=_SYSTEM,
+            system=system,
             prompt=f"[목표] {goal}\n[조각]\n{fact_text[:600]}\n\n답:",
         )
     except Exception:
@@ -76,13 +102,14 @@ def _iterate_judges(
     candidates: list[dict],
     client: OllamaChatClient,
     workers: int = 4,
+    system: str = _SYSTEM,
 ) -> tuple[list[dict], list[dict]]:
     """병렬 judge. (relevant, dropped) 반환."""
     relevant: list[dict] = []
     dropped: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {
-            ex.submit(_judge_one, client, goal, c.get("text") or ""): c
+            ex.submit(_judge_one, client, goal, c.get("text") or "", system): c
             for c in candidates
         }
         for fut in concurrent.futures.as_completed(futs):
@@ -119,6 +146,14 @@ def run_selector(
         temperature=0.1,
     )
 
+    # Phase G7 — 유사 goal 의 과거 절차 retrieval. 시스템 프롬프트 힌트로 주입.
+    procedure_hint = ""
+    if os.environ.get("G_TRACE_RETRIEVAL", "on").lower() in {"on", "1", "true"}:
+        patterns = _fetch_procedure_patterns(gclient, goal, top_k=3)
+        procedure_hint = _procedure_hint(patterns)
+    system_prompt = _SYSTEM + (("\n\n" + procedure_hint) if procedure_hint else "")
+    client_system = system_prompt  # judge() 안에 system 로 전달
+
     # 초기 후보 수집 — fused (G + Gateway)
     hits = gclient.fused_search(
         goal,
@@ -153,7 +188,9 @@ def run_selector(
     for iter_i in range(1, max_iter + 1):
         if not candidates:
             break
-        relevant, dropped = _iterate_judges(goal, candidates, client, workers=workers)
+        relevant, dropped = _iterate_judges(
+            goal, candidates, client, workers=workers, system=client_system
+        )
         result.iterations.append(
             SelectorIteration(
                 iter=iter_i,
