@@ -1,0 +1,23 @@
+{
+  "KAMIS 농산물 유통 정보 시스템 공식 사이트": [
+    {"url": "https://www.kamis.or.kr/", "title": "농산물유통정보(kamis)", "snippet": "aT 한국농수산식품유통공사 운영. 도매 76품목, 소매 95품목, 친환경 52품목"},
+    {"url": "http://www.kamis.co.kr/", "title": "카미스 - 농산물식품유통공사", "snippet": "KAMIS 공식"},
+    {"url": "https://www.nongnet.or.kr/", "title": "농넷 - 농산물유통 종합정보시스템", "snippet": "농산물 유통 종합정보"},
+    {"url": "https://www.kamis.or.kr/customer/price/wholesale/item.do", "title": "중도매인 판매가격 품목별", "snippet": "가격정보 > 세부가격정보"},
+    {"url": "https://www.kamis.or.kr/customer/nature/market.do", "title": "친환경농산물 판매장 현황조사", "snippet": "조사보고서"}
+  ],
+  "외식업 폐업률 2024 한국 통계": [
+    {"url": "https://www.atfis.or.kr/fip/front/M000000217/board/list.do", "title": "통계보고서 - 더외식", "snippet": "식품외식 공식 통계"},
+    {"url": "https://eventmoa.kr/2024-2-서울-외식업-개폐업률", "title": "2024년 서울 외식업 폐업률과 임대료 분석", "snippet": "서울 2024 2분기 개업 4.3% 폐업 4.2%"},
+    {"url": "https://franchise.hsd.co.kr/magazine/?bmode=view&idx=167133345", "title": "자영업자 폐업률·매출 근황", "snippet": "2024 음식점업 폐업률 15.82%, 전체 폐업률 9.04%"},
+    {"url": "https://www.foodicon.co.kr/news/articleView.html?idxno=29539", "title": "외식업 반등 끝에 직면한 현실 2024", "snippet": "성장 정체와 구조 변화 전환점"},
+    {"url": "https://kosis.kr/search/search.do?query=음식점업", "title": "KOSIS 음식점업 통계", "snippet": "국가통계포털"}
+  ],
+  "농식품 AI 응용제품 신속상용화 지원사업 2025": [
+    {"url": "http://agri-ai.kr/", "title": "농식품 분야 AI 응용제품 신속상용화 지원사업", "snippet": "공식 사업 홈페이지"},
+    {"url": "https://www.mafra.go.kr/bbs/home/791/577351/artclView.do", "title": "농림축산식품부 CMS - AI 응용제품 신속상용화", "snippet": "정부 공식 공고"},
+    {"url": "https://www.bizinfo.go.kr/sii/siia/selectSIIA200Detail.do?pblancId=PBLN_000000000119746", "title": "2026년 농식품 분야 AI 응용제품 신속상용화 지원사업 모집 공고", "snippet": "기업마당 공고 (2026년 사업)"},
+    {"url": "https://www.bioin.or.kr/board.do?num=333382&cmd=view&bid=notice", "title": "농식품 분야 AI 응용제품 신속상용화 지원사업 모집공고", "snippet": "BioIN 공고"},
+    {"url": "https://srome.keit.re.kr/srome/biz/perform/opnnPrpsl/retrieveRndPlnnDtlView.do?prgmId=XPG201010000", "title": "2026년도 AI 응용제품 신속 상용화 지원사업 수요조사", "snippet": "KEIT 수요조사"}
+  ]
+}
