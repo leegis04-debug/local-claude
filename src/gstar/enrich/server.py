@@ -24,6 +24,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from gstar.enrich.g_cache import cache_first_web_search
 from gstar.enrich.policy import EnrichItem, generate_queries, hash_text
 from gstar.enrich.synth import synthesize_from_result
 from gstar.enrich.web_search import web_search
@@ -77,9 +78,16 @@ async def enrich_stream(req: EnrichRequestModel):
         queries = generate_queries(gap)
         max_per = req.max_facts_per_node
         backend = os.environ.get("ENRICH_SEARCH_BACKEND", "mock")
+        use_cache = os.environ.get("ENRICH_CACHE_FIRST", "on").lower() in ("1", "on", "true", "yes")
         for query, node_gap in queries:
             try:
-                results = await web_search(query, backend=backend, top_k=max_per)
+                if use_cache:
+                    cr = await cache_first_web_search(
+                        query, backend=backend, top_k=max_per, namespace=req.namespace or "web_cache"
+                    )
+                    results = cr.results
+                else:
+                    results = await web_search(query, backend=backend, top_k=max_per)
             except Exception:
                 continue
             for r in results[:max_per]:

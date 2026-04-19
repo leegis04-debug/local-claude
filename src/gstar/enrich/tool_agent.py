@@ -123,8 +123,14 @@ def _parse_tool_call(text: str) -> ToolCall | None:
 
 
 async def _execute_tool(call: ToolCall) -> str:
-    """tool 실제 실행. 결과를 LLM 에게 돌려줄 텍스트로 직렬화."""
-    from gstar.enrich.self_made import search_and_fetch, self_made_search
+    """tool 실제 실행. 결과를 LLM 에게 돌려줄 텍스트로 직렬화.
+
+    web_search 는 기본적으로 cache_first_web_search 를 사용 — G 에 이미 해당
+    주제의 fact 가 쌓여 있으면 외부 호출 skip. env `GP_TOOL_CACHE_FIRST=off` 로
+    비활성 가능 (원본 self_made_search 경로 유지).
+    """
+    from gstar.enrich.g_cache import cache_first_web_search
+    from gstar.enrich.self_made import self_made_search
     from gstar.enrich.web_search import web_fetch
 
     try:
@@ -133,6 +139,24 @@ async def _execute_tool(call: ToolCall) -> str:
             top_k = int(call.args.get("top_k", 3))
             if not q:
                 return "[web_search error] query 비어있음"
+            use_cache = os.environ.get("GP_TOOL_CACHE_FIRST", "on").lower() in ("1", "on", "true", "yes")
+            if use_cache:
+                backend = os.environ.get("GP_TOOL_BACKEND", "brave")
+                cr = await cache_first_web_search(q, backend=backend, top_k=top_k)
+                hits = cr.results
+                tag = "g_cache" if cr.from_cache else f"web:{backend}"
+                if not hits:
+                    return f"[web_search] '{q}' 결과 0건"
+                lines = [f"[web_search·{tag}] '{q}' top_{len(hits)}"]
+                for i, h in enumerate(hits):
+                    title = h.get("title", "")
+                    url = h.get("url", "")
+                    snippet = h.get("snippet", "")
+                    lines.append(f"{i+1}. {title[:120]}")
+                    lines.append(f"   URL: {url}")
+                    if snippet:
+                        lines.append(f"   snippet: {snippet[:300]}")
+                return "\n".join(lines)
             hits = await self_made_search(q, top_k=top_k)
             if not hits:
                 return f"[web_search] '{q}' 결과 0건"
