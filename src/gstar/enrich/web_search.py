@@ -1,10 +1,18 @@
-"""Web search 어댑터 — Brave / SerpAPI / Firecrawl / Mock."""
+"""Web search 어댑터 — 12종 백엔드. 진짜 무료: tavily/exa/ddg/wiki/playwright."""
 
 from __future__ import annotations
 
 import asyncio
 import os
 from typing import Any
+
+# 모듈 임포트 시 ~/.gstar/keys.env 자동 로드 (shell env 가 우선)
+try:
+    from gstar.enrich.keys import load_keys as _load_keys
+
+    _load_keys()
+except Exception:
+    pass
 
 
 async def web_search(
