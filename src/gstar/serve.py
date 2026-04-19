@@ -583,3 +583,56 @@ def ingest_nas(req: NasIngestRequest):
         entities=report.entities,
         edges=report.edges,
     )
+
+
+# -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------
+
+
+class Neo4jIngestRequest(BaseModel):
+    dump_dir: str                       # 컨테이너 내부 경로 (nodes.jsonl + edges.jsonl 포함)
+    namespace: str = "graph_import"
+
+
+class Neo4jIngestResponse(BaseModel):
+    namespace: str
+    nodes_created: int
+    nodes_reused: int
+    entities_new: int
+    entities_reused: int
+    edges_created: int
+    edges_skipped: int
+
+
+@app.post("/ingest/neo4j", response_model=Neo4jIngestResponse)
+def ingest_neo4j(req: Neo4jIngestRequest):
+    """Neo4j dump 디렉터리(nodes.jsonl + edges.jsonl) 를 G 에 upsert."""
+    from gstar.ingest.neo4j_mapper import apply_dump
+
+    s = get_state()
+    d = Path(req.dump_dir)
+    if not d.exists():
+        raise HTTPException(404, f"dump_dir not found: {d}")
+    nodes_path = d / "nodes.jsonl"
+    edges_path = d / "edges.jsonl"
+    if not nodes_path.exists():
+        raise HTTPException(400, f"nodes.jsonl missing in {d}")
+    try:
+        result = apply_dump(
+            nodes_path=nodes_path,
+            edges_path=edges_path,
+            store=s.store,
+            embedder=s.embedder,
+            faiss=s.faiss,
+            namespace=req.namespace,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"neo4j import failed: {exc}")
+    return Neo4jIngestResponse(
+        namespace=result["namespace"],
+        nodes_created=result["nodes_created"],
+        nodes_reused=result["nodes_reused"],
+        entities_new=result["entities_new"],
+        entities_reused=result["entities_reused"],
+        edges_created=result["edges_created"],
+        edges_skipped=result["edges_skipped"],
+    )

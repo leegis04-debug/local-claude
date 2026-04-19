@@ -21,7 +21,7 @@ COPY src ./src
 COPY README.md ./
 
 RUN pip install --upgrade pip && \
-    pip install '.[gstar]' fastapi uvicorn[standard]
+    pip install '.[gstar,entity,input]' fastapi uvicorn[standard]
 
 # G 서버가 쓸 상태 디렉토리 (bind mount 권장)
 RUN mkdir -p /app/state
