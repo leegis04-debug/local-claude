@@ -6,6 +6,7 @@ FAISS 는 별도 인덱스 파일. 여기선 노드/엣지/목표/클러스터/�
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,12 +40,17 @@ def _from_utc_naive(ts: datetime | None) -> datetime | None:
 
 
 class DuckStore:
-    """단일 DuckDB 파일 래퍼. 스레드 공유는 피한다 (DuckDB 기본 연결은 싱글라이터)."""
+    """단일 DuckDB 파일 래퍼. DuckDB 기본 connection 은 thread-safe 하지 않으므로
+    FastAPI threadpool 에서 공유 시 `Attempted to dereference unique_ptr that is NULL!`
+    같은 internal error 가 발생. `self.lock` 을 통해 모든 쿼리를 직렬화한다.
+    외부에서 `store.conn.execute` 를 직접 호출하는 모듈(entity/linker 등)은
+    `with store.lock:` 으로 감싸야 안전."""
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(str(self.db_path))
+        self.lock = threading.RLock()
         self._migrate()
 
     def _migrate(self) -> None:
@@ -67,38 +73,43 @@ class DuckStore:
         # content_hash 비어있으면 계산
         if not node.content_hash:
             node.content_hash = compute_content_hash(node)
-        # prev_hash 미지정이면 동일 namespace 의 직전 노드에서 링크
-        if node.prev_hash is None:
-            prev_row = self.conn.execute(
-                "SELECT content_hash FROM node WHERE source_namespace = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
-                [node.source_namespace],
-            ).fetchone()
-            node.prev_hash = prev_row[0] if prev_row else None
+        with self.lock:
+            # prev_hash 미지정이면 동일 namespace 의 직전 노드에서 링크
+            if node.prev_hash is None:
+                prev_row = self.conn.execute(
+                    "SELECT content_hash FROM node WHERE source_namespace = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [node.source_namespace],
+                ).fetchone()
+                node.prev_hash = prev_row[0] if prev_row else None
 
-        self.conn.execute(
-            f"INSERT INTO node ({self._NODE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                node.id,
-                node.kind,
-                node.text,
-                json.dumps(node.attrs, ensure_ascii=False),
-                _to_utc_naive(node.created_at),
-                node.version,
-                node.prev_version_id,
-                node.source_namespace,
-                node.content_hash,
-                node.prev_hash,
-                node.signer_id,
-                node.signature,
-            ],
-        )
+            self.conn.execute(
+                f"INSERT INTO node ({self._NODE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    node.id,
+                    node.kind,
+                    node.text,
+                    json.dumps(node.attrs, ensure_ascii=False),
+                    _to_utc_naive(node.created_at),
+                    node.version,
+                    node.prev_version_id,
+                    node.source_namespace,
+                    node.content_hash,
+                    node.prev_hash,
+                    node.signer_id,
+                    node.signature,
+                ],
+            )
 
     def get_node(self, node_id: str) -> Node | None:
-        row = self.conn.execute(
-            f"SELECT {self._NODE_COLS} FROM node WHERE id = ?",
-            [node_id],
-        ).fetchone()
+        with self.lock:
+            try:
+                row = self.conn.execute(
+                    f"SELECT {self._NODE_COLS} FROM node WHERE id = ?",
+                    [node_id],
+                ).fetchone()
+            except duckdb.InternalException:
+                return None
         return _row_to_node(row) if row else None
 
     def list_nodes(
@@ -125,7 +136,12 @@ class DuckStore:
         return [_row_to_node(r) for r in rows]
 
     def count_nodes(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) FROM node").fetchone()[0]
+        with self.lock:
+            try:
+                row = self.conn.execute("SELECT COUNT(*) FROM node").fetchone()
+            except duckdb.InternalException:
+                return -1
+        return int(row[0]) if row else 0
 
     def nodes_by_namespace(self, namespace: str) -> list[Node]:
         """verify_chain 용. created_at, id 순 오름차순."""
@@ -139,27 +155,32 @@ class DuckStore:
     # ---------- Edge ----------
 
     def insert_edge(self, edge: Edge) -> None:
-        self.conn.execute(
-            "INSERT INTO edge (id, src, dst, kind, weight, evidence_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                edge.id,
-                edge.src,
-                edge.dst,
-                edge.kind,
-                edge.weight,
-                json.dumps(edge.evidence_ids, ensure_ascii=False),
-                edge.created_at,
-            ],
-        )
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO edge (id, src, dst, kind, weight, evidence_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    edge.id,
+                    edge.src,
+                    edge.dst,
+                    edge.kind,
+                    edge.weight,
+                    json.dumps(edge.evidence_ids, ensure_ascii=False),
+                    edge.created_at,
+                ],
+            )
 
     def edges_of(self, node_id: str) -> list[Edge]:
         """해당 노드를 src 또는 dst 로 포함하는 모든 엣지."""
-        rows = self.conn.execute(
-            "SELECT id, src, dst, kind, weight, evidence_json, created_at "
-            "FROM edge WHERE src = ? OR dst = ?",
-            [node_id, node_id],
-        ).fetchall()
+        with self.lock:
+            try:
+                rows = self.conn.execute(
+                    "SELECT id, src, dst, kind, weight, evidence_json, created_at "
+                    "FROM edge WHERE src = ? OR dst = ?",
+                    [node_id, node_id],
+                ).fetchall()
+            except duckdb.InternalException:
+                return []
         return [_row_to_edge(r) for r in rows]
 
     def degree(self, node_id: str) -> int:

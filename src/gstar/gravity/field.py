@@ -72,7 +72,10 @@ def compute_gravity(
     entries: list[GravityEntry] = []
 
     for nid in candidate_ids:
-        node = store.get_node(nid)
+        try:
+            node = store.get_node(nid)
+        except Exception:
+            continue
         if node is None or node.kind not in {"fact", "entity", "event", "state", "evidence"}:
             continue
 
