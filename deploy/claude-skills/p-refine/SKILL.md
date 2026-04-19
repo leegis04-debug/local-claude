@@ -21,28 +21,89 @@ Claude 의 정제 패턴을 재현**. 이 루프가 돌수록 Claude 개입 없�
 기존 `/g-trace` 는 일반 trace 기록용. `/p-refine` 은 **P축 파이프라인 전용 고수준 래퍼** —
 초안 로드 + G RAG + Claude 정제 + 원본 보존 + G 로그 4종을 자동화.
 
-## 실행 조건
+## 호출 방법
 
-사용자 입력에 하나 이상 해당:
-- `!gjw`·`!gre`·`!gcode`·`!gdoc` 실행 직후 (Bash 출력에 `elapsed:` + `run_id:` + `output:` 포함)
-- "분량 작다" / "부족하다" / "다듬어줘" / "이거 Claude 로 정제" / "p-refine" / "refine"
-- 명시적 slash: `/p-refine <project-dir> <stage>`
+### 표기
+- `/p-refine <target>` 또는 자연어 "N번 다듬어줘" / "idea 다듬어줘"
+- `<target>` 은 아래 3형태 모두 허용:
+  1. **번호** — `01`, `02`, `03` … (`1` 처럼 0 없어도 됨)
+  2. **stage 이름** — `idea`, `debate`, `structure`, `spec`, `risk-check`,
+     `experiment-plan`, `proposal`, `final-doc`, `lab-note` /
+     `outline`·`draft`·`revise`·`finalize` (gdoc) /
+     `explore`·`plan`·`implement`·`test`·`review` (gcode)
+  3. **생략** — `<target>` 미지정 시 "방금 `!gjw/!gre/!gcode/!gdoc` 실행된 stage" 를 자동 선택.
+     Bash 출력에서 `stage: <X>` 를 파싱해 사용.
 
-gjw 가 실행되지 않았는데 대상 파일이 없으면 skill 중단. "먼저 `!gjw <stage> '...' --mode svrr` 를 실행하세요" 안내.
+### 자동 트리거
+- `!gjw <stage> "..."`·`!gre ...`·`!gcode ...`·`!gdoc ...` 실행 직후에 한해
+  사용자가 "다듬어줘"·"분량 작다"·"더 풍성하게"·"refine"·"이어서 Claude 로" 발화 시
+  Claude 가 스스로 이 skill 호출. 별도 slash 없어도 됨.
 
 ## 단계
 
-### 1. 대상 산출물 확인
+### 1. project-dir 결정
 
+우선순위:
+1. Claude 세션에 명시된 프로젝트 경로 (이전 대화에서 언급됐거나 `$PWD`)
+2. 터미널 현재 디렉터리 (`pwd` 결과)
+3. `JW_PROJECT_DIR`·`RE_PROJECT_DIR` env
+4. 없으면 "프로젝트 경로 알려주세요" 한 번만 질문
+
+### 2. target → stage-dir 해석
+
+```bash
+PROJECT="<프로젝트 루트>"
+TARGET="<사용자 입력: 01 | idea | ... | 빈값>"
+
+# 케이스 A: 숫자 (01, 1, 10)
+if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+  N=$(printf '%02d' "$TARGET")                    # 01, 02, ..., 10
+  STAGE_DIR=$(ls -d "$PROJECT/${N}-"* 2>/dev/null | head -1)
+fi
+
+# 케이스 B: stage 이름
+if [[ -z "$STAGE_DIR" && -n "$TARGET" ]]; then
+  STAGE_DIR=$(ls -d "$PROJECT"/[0-9][0-9]-"$TARGET"* 2>/dev/null | head -1)
+fi
+
+# 케이스 C: 빈값 — 최근 gjw/gre 실행 로그에서 stage 추출
+# Bash 출력에 "stage: idea" 가 있었으면 해당, 없으면 가장 최근 수정된 NN-* 폴더
+if [[ -z "$STAGE_DIR" ]]; then
+  STAGE_DIR=$(ls -dt "$PROJECT"/[0-9][0-9]-* 2>/dev/null | head -1)
+fi
+
+[ -z "$STAGE_DIR" ] && { echo "대상 폴더 못 찾음: project=$PROJECT target=$TARGET"; exit 1; }
+STAGE=$(basename "$STAGE_DIR" | sed 's/^[0-9][0-9]-//')
+SEQ=$(basename "$STAGE_DIR" | grep -oE '^[0-9]+')
 ```
-<project-dir>/NN-<stage>/stage.md                 # classic
-<project-dir>/NN-<stage>/_mode_svrr/stage.md      # svrr 모드 (우선)
-<project-dir>/NN-<stage>/_mode_svrr/report.json   # svrr 메타
+
+### 3. 해당 폴더의 md 파일 전수 스캔 + 대상 결정
+
+```bash
+# 그 폴더 아래 모든 .md 를 목록화 (svrr 우선순위)
+MDS=()
+# 1) svrr 결과 우선
+[ -f "$STAGE_DIR/_mode_svrr/stage.md" ] && MDS+=("$STAGE_DIR/_mode_svrr/stage.md")
+# 2) classic 표준 파일명들
+for f in "$STAGE_DIR/$STAGE.md" "$STAGE_DIR/${STAGE}-canvas.md" "$STAGE_DIR/stage.md"; do
+  [ -f "$f" ] && MDS+=("$f")
+done
+# 3) 그 외 md (하위 폴더 포함, _versions 제외)
+while IFS= read -r f; do MDS+=("$f"); done < <(
+  find "$STAGE_DIR" -name '*.md' -not -path '*/_versions/*' \
+    -not -path '*/_mode_svrr/*' 2>/dev/null
+)
+
+# 중복 제거 + 가장 최근 수정 파일을 "정제 대상" 으로
+TARGET_MD=$(printf '%s\n' "${MDS[@]}" | awk '!seen[$0]++' | \
+            xargs -I {} stat -f '%m %N' {} 2>/dev/null | sort -rn | head -1 | awk '{print $2}')
+
+# 그 외 md 는 참고용 (맥락으로 읽기만)
 ```
 
-없으면 classic 산출물 fallback. 둘 다 없으면 skill 종료.
+Claude 는 `TARGET_MD` 를 정제 대상으로, 나머지 md 는 **읽기만** 하고 맥락·중복 회피용으로 사용.
 
-### 2. G 근거 수집 (정제 재료)
+### 4. G 근거 수집 (정제 재료)
 
 ```bash
 G_URL="${GSTAR_SERVER_URL:-http://100.79.251.53:9999}"
@@ -63,7 +124,7 @@ curl -sf -X POST "$G_URL/search/fused" \
 상위 5~10 hit 의 text·source·score 를 Claude 컨텍스트에 반영. 동일 stage 의
 `_versions/*.md` 가 있으면 최신본도 참고.
 
-### 3. Claude 정제 원칙
+### 5. Claude 정제 원칙
 
 각 섹션을 다음 7가지 기준으로 보강:
 
@@ -80,21 +141,24 @@ curl -sf -X POST "$G_URL/search/fused" \
 **파괴적 수정 금지**: Gemma 초안의 **문장을 삭제하지 말고 보강**. 대체 불가피 시 원문을
 인용 블록 (`> 원본:`) 으로 남기고 정제본 바로 아래 배치.
 
-### 4. 저장
+### 6. 저장 (원본 보존 + 덮어쓰기)
 
 ```bash
-# 원본 버전 보존
-STAGE_DIR="<project>/NN-<stage>"
+# STAGE_DIR, TARGET_MD 는 단계 2·3 에서 계산됨
 VER_DIR="$STAGE_DIR/_versions"
 mkdir -p "$VER_DIR"
-N=$(ls "$VER_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ')
+BASE=$(basename "$TARGET_MD" .md)
+N=$(ls "$VER_DIR"/${BASE}-v*-gemma.md 2>/dev/null | wc -l | tr -d ' ')
 NEXT=$((N+1))
-cp "$STAGE_DIR/stage.md" "$VER_DIR/stage-v${NEXT}-gemma.md"
+cp "$TARGET_MD" "$VER_DIR/${BASE}-v${NEXT}-gemma.md"
 
-# Write 정제본을 stage.md 로 덮어쓰기
+# Claude 는 Write tool 로 "$TARGET_MD" 에 정제본 덮어쓰기
+# (파일 경로는 Read 했던 그 경로와 동일해야 함)
+BEFORE_BYTES=$(wc -c < "$VER_DIR/${BASE}-v${NEXT}-gemma.md" | tr -d ' ')
+AFTER_BYTES=$(wc -c < "$TARGET_MD" | tr -d ' ')
 ```
 
-### 5. G 로그 3종
+### 7. G 로그 3종
 
 #### (a) 업데이트 요약 — `/notes`
 
@@ -157,18 +221,40 @@ curl -sf -X POST "$G_URL/notes" -H "Content-Type: application/json" \
 
 이 diff 가 Selector 의 procedure retrieval 재료로 **"Gemma 이렇게 썼을 때 Claude 는 이렇게 고쳤다"** 패턴 학습의 핵심 원천.
 
-### 6. 사용자 보고
+### 8. 사용자 보고
 
 한 블록으로:
 
 ```
 p-refine 완료
-├─ 대상: <project>/NN-<stage>/stage.md
-├─ 원본: _versions/stage-v<N>-gemma.md (Gemma svrr, <before>B)
-├─ 결과: stage.md (<after>B, +<delta>B)
+├─ project: <project-dir>
+├─ stage:   <NN>-<stage>/
+├─ 대상:    <TARGET_MD basename>
+├─ 원본:    _versions/<basename>-v<N>-gemma.md (<before>B)
+├─ 결과:    <TARGET_MD basename> (<after>B, +<delta>B)
 ├─ 추가 섹션: <list>
-├─ G 근거: <N> 건 편입 (<top sources>)
-└─ G 로그: task_id=<TID>, notes=OK, diff=<ingest|skip>
+├─ G 근거:  <N> 건 편입 (<top sources>)
+└─ G 로그:  task_id=<TID>, notes=OK, trace=OK, diff=<ingest|skip>
+```
+
+## 호출 예시
+
+```
+# 번호로 (가장 간단)
+/p-refine 1
+/p-refine 03
+
+# stage 이름으로
+/p-refine idea
+/p-refine structure
+
+# 자연어 (자동 트리거)
+"01 번 폴더 다듬어줘"
+"idea.md 분량 너무 작다"
+"!gjw idea '...' --mode svrr" 실행 후 "이거 정제"
+
+# 프로젝트 명시 (cwd 가 아닐 때)
+/p-refine idea --project "/Users/.../projects/agri-food-ai-gjw"
 ```
 
 ## 환경변수
