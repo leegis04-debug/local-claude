@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from gstar.embedding import Embedder
-from gstar.ingest.chunker import chunk_path
+from gstar.ingest.chunker import chunk_path, chunk_path_structured
 from gstar.ingest.entity_extract import extract_candidates, extract_candidates_morph
 from gstar.ingest.relation_infer import infer_relations, infer_relations_typed
 from gstar.schema import Edge, Namespace, Node
@@ -50,6 +50,8 @@ def ingest_path(
     lookup 해 Qdrant payload 메타(tags/date/source/project/security_level/priority
     등)를 node.attrs 에 병합. Phase A2 의 "Qdrant metadata 주입" 경로.
     """
+    import os as _os
+
     ns = namespace or store.active_namespace()
     known = {x.name for x in store.list_namespaces()}
     if ns not in known:
@@ -57,7 +59,19 @@ def ingest_path(
             Namespace(name=ns, description="(auto from ingest)", is_active=False)
         )
 
-    facts = chunk_path(target, root=root)
+    # Phase H2: structured 모드 (document/section/fact 노드 + part_of edge)
+    # env `GSTAR_STRUCTURED=on` (기본 off) — 기존 fact-only 경로와 호환.
+    structured_enabled = _os.environ.get("GSTAR_STRUCTURED", "off").lower() in {
+        "on", "1", "true"
+    }
+    doc_section_facts = None
+    if structured_enabled:
+        chunks_list = chunk_path_structured(target, root=root)
+        facts = [f for sc in chunks_list for f in sc.facts]
+        doc_section_facts = chunks_list
+    else:
+        facts = chunk_path(target, root=root)
+
     if not facts:
         return IngestReport(facts=0, entities=0, edges=0, files_scanned=0)
 
@@ -82,6 +96,53 @@ def ingest_path(
         meta_cache[src] = m
         return m
 
+    # Phase H2: structured 모드 — document/section 노드 먼저 생성 (part_of edge 는 fact 저장 후)
+    placeholder_to_node: dict[str, str] = {}   # chunker placeholder id → 실제 Node.id
+    doc_section_count = 0
+    if doc_section_facts is not None:
+        for sc in doc_section_facts:
+            doc_node = Node(
+                kind="document",
+                text=sc.document.title or sc.document.source,
+                attrs={
+                    "source": sc.document.source,
+                    "content_hash": sc.document.content_hash,
+                    **_file_meta(sc.document.source),
+                },
+                source_namespace=ns,
+            )
+            store.insert_node(doc_node)
+            placeholder_to_node[sc.document.id] = doc_node.id
+            doc_section_count += 1
+
+            for sec in sc.sections:
+                sec_node = Node(
+                    kind="section",
+                    text=sec.title,
+                    attrs={
+                        "source": sec.source,
+                        "level": sec.level,
+                        "line_no": sec.line_no,
+                    },
+                    source_namespace=ns,
+                )
+                store.insert_node(sec_node)
+                placeholder_to_node[sec.id] = sec_node.id
+                doc_section_count += 1
+
+                # section part_of parent (document 또는 상위 section)
+                parent_real = placeholder_to_node.get(sec.parent_id)
+                if parent_real:
+                    store.insert_edge(
+                        Edge(
+                            src=sec_node.id,
+                            dst=parent_real,
+                            kind="part_of",
+                            weight=1.0,
+                            evidence_ids=[],
+                        )
+                    )
+
     fact_nodes: list[Node] = []
     for f in facts:
         attrs: dict = {"source": f.source, "section": f.section, "line_no": f.line_no}
@@ -98,6 +159,20 @@ def ingest_path(
         )
         fact_nodes.append(n)
         store.insert_node(n)
+
+        # Phase H2: fact part_of section (structured 모드만)
+        if doc_section_facts is not None:
+            sec_real = placeholder_to_node.get(getattr(f, "section_id", ""))
+            if sec_real:
+                store.insert_edge(
+                    Edge(
+                        src=n.id,
+                        dst=sec_real,
+                        kind="part_of",
+                        weight=1.0,
+                        evidence_ids=[],
+                    )
+                )
 
     faiss.add_batch([n.id for n in fact_nodes], fact_vecs)
 

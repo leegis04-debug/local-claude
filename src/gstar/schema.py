@@ -26,6 +26,8 @@ NodeKind = Literal[
     "fact", "entity", "relation", "event", "state", "evidence",
     # Phase G6 — worker procedure miner 가 생성하는 절차 패턴 노드
     "procedure",
+    # Phase H1 — 원본→정규화 3단계 (document root / section tree)
+    "document", "section",
 ]
 GoalKind = Literal["proposal", "code", "research"]
 
