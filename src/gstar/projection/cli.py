@@ -37,6 +37,107 @@ from gstar.storage.duckdb_store import DuckStore
 from gstar.storage.faiss_index import FaissStore
 
 
+def _reverse_ingest(
+    output_path: Path,
+    store: DuckStore,
+    paths: Paths,
+    namespace: str,
+    track: str,
+) -> dict | None:
+    """생성된 md 를 G 본체(node/edge) 에 역삽입. 이후 단계 retrieval 에서 재활용."""
+    if not output_path or not output_path.exists():
+        return None
+    try:
+        from gstar.embedding.sbert import SBertEmbedder
+        from gstar.ingest.pipeline import ingest_path
+
+        embedder = SBertEmbedder()
+        faiss = FaissStore(paths.faiss, dim=embedder.dim)
+        try:
+            report = ingest_path(
+                output_path,
+                store=store,
+                faiss=faiss,
+                embedder=embedder,
+                namespace=namespace,
+                track=track,
+            )
+            faiss.save()
+            return {
+                "facts": report.facts,
+                "entities": report.entities,
+                "edges": report.edges,
+            }
+        finally:
+            pass
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
+def _maybe_enrich_start(topic: str, store: DuckStore, pid: str, track: str):
+    """ENRICH_HOST 설정돼 있으면 백그라운드 enrich subscriber 시작. 없으면 None."""
+    host = os.environ.get("GP_ENRICH_HOST")
+    if not host or os.environ.get("GP_ENRICH", "off").lower() == "off":
+        return None
+    try:
+        from gstar.enrich.client import EnrichSubscriber
+        from gstar.enrich.policy import EnrichRequest
+        from gstar.stellar.gap_analysis import gap_stats_for_nodes
+
+        ent_rows = store.conn.execute(
+            "SELECT node_id FROM entity_canonical WHERE project_id=? AND node_id IS NOT NULL "
+            "ORDER BY mentions DESC LIMIT 30",
+            [pid],
+        ).fetchall()
+        anchor_ids = [r[0] for r in ent_rows if r[0]]
+        gap = gap_stats_for_nodes(anchor_ids, store) if anchor_ids else None
+        if gap is None or not gap.under_connected:
+            return None
+        req = EnrichRequest(
+            cluster_topic=topic[:200],
+            under_connected=[
+                {
+                    "node_id": g.node_id,
+                    "text": g.text,
+                    "kind": g.kind,
+                    "current_degree": g.current_degree,
+                    "shortfall": g.shortfall,
+                    "neighbor_ids": g.neighbor_ids,
+                }
+                for g in gap.under_connected[:8]
+            ],
+            project_id=pid,
+        )
+        sub = EnrichSubscriber(host)
+        sub.start(req)
+        return sub
+    except Exception:
+        return None
+
+
+def _drain_enrich(sub, store: DuckStore) -> dict | None:
+    if sub is None:
+        return None
+    try:
+        from gstar.enrich.client import drain_queue
+
+        def hash_checker(h: str) -> bool:
+            row = store.conn.execute(
+                "SELECT 1 FROM node WHERE content_hash = ? LIMIT 1", [h]
+            ).fetchone()
+            return row is not None
+
+        report = drain_queue(sub.queue, store, embedder=None, hash_checker=hash_checker)
+        return {
+            "facts": report.facts_inserted,
+            "edges": report.edges_inserted,
+            "dup": report.dropped_duplicate,
+            "invalid": report.dropped_invalid,
+        }
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
 project_app = typer.Typer(help="P축 — Claude↔Gemma 격차 보강 투영기")
 
 
@@ -226,6 +327,12 @@ def run_cmd(
     paths = Paths.load()
     store = DuckStore(paths.db)
     t0 = time.time()
+    enrich_sub = _maybe_enrich_start(
+        topic=(user_input or stage)[:200],
+        store=store,
+        pid=_project_id_from_dir(project_dir),
+        track=track_name,
+    )
     try:
         existing_artifacts = load_project(project_dir)
         previous = prev_stages(existing_artifacts + [], stage) if existing_artifacts else []
@@ -263,8 +370,16 @@ def run_cmd(
         )
         entities = _entities_for_project(store, pid, task.name)
 
+        try:
+            form_ctx = load_form(project_dir)
+        except Exception:
+            form_ctx = None
+        try:
+            schema = task.section_schema(stage, form_context=form_ctx)  # type: ignore[call-arg]
+        except TypeError:
+            schema = task.section_schema(stage)
         sections_input = pack_sections(
-            task.section_schema(stage),
+            schema,
             prev_sum,
             hits,
             entities,
@@ -299,7 +414,20 @@ def run_cmd(
             duration_ms=duration_ms,
             ollama_model=model,
         )
+
+        ingest_report = None
+        if os.environ.get("GP_REVERSE_INGEST", "on").lower() != "off":
+            ingest_report = _reverse_ingest(
+                result.output_path, store, paths, namespace=pid, track=task.name
+            )
+
+        enrich_report = _drain_enrich(enrich_sub, store)
     finally:
+        if enrich_sub is not None:
+            try:
+                enrich_sub.stop(wait_s=0.2)
+            except Exception:
+                pass
         store.close()
 
     typer.echo(f"track:   {task.name}")
@@ -310,6 +438,22 @@ def run_cmd(
     typer.echo(f"run_id:  {result.run_id}")
     retries = sum((s.attempts - 1) for s in rendered)
     typer.echo(f"coherence_retries: {retries}")
+    if ingest_report:
+        if "error" in ingest_report:
+            typer.echo(f"reverse_ingest: ERROR {ingest_report['error']}")
+        else:
+            typer.echo(
+                f"reverse_ingest: facts={ingest_report['facts']} "
+                f"entities={ingest_report['entities']} edges={ingest_report['edges']}"
+            )
+    if enrich_report:
+        if "error" in enrich_report:
+            typer.echo(f"enrich: ERROR {enrich_report['error']}")
+        else:
+            typer.echo(
+                f"enrich: facts={enrich_report['facts']} edges={enrich_report['edges']} "
+                f"dup={enrich_report['dup']} invalid={enrich_report['invalid']}"
+            )
 
 
 def main() -> None:

@@ -287,9 +287,88 @@ def load_project(
     return artifacts
 
 
+def _merge_template_map(root: Path, fc: FormContext) -> FormContext:
+    """00-input/template-map.md 가 있으면 FormContext 에 합쳐 sections 주입."""
+    tm = root / "00-input" / "template-map.md"
+    if not tm.exists():
+        return fc
+    try:
+        raw = tm.read_text(encoding="utf-8")
+    except OSError:
+        return fc
+    sections = _parse_template_map_md(raw)
+    if sections:
+        fc.meta = dict(fc.meta)
+        fc.meta.setdefault("sections", sections)
+        # raw 에도 병합 (텍스트 fallback 용)
+        fc.raw = (fc.raw + "\n\n---\n\n" + raw) if fc.raw else raw
+    return fc
+
+
+def _parse_template_map_md(raw: str) -> list[dict]:
+    """jw wrapper 가 만든 `template-map.md` 포맷 → sections 리스트.
+
+    포맷 (예):
+    | # | 섹션명 | 유형 | 양식 위치 | 주요 항목 |
+    |---|--------|------|-----------|----------|
+    | 8 | 1. 상용화 대상 개요 | 서술 | 표21-24 | 1-1. 상용화대상 소개...|
+
+    + `### 섹션 N: 제목` 아래의 양식 지시사항·예상 분량·필요 내용 등.
+    """
+    import re as _re
+
+    sections: list[dict] = []
+    # 1) 표 파싱
+    table_re = _re.compile(
+        r"^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|",
+        _re.MULTILINE,
+    )
+    for m in table_re.finditer(raw):
+        num = m.group(1).strip()
+        title = m.group(2).strip()
+        kind_label = m.group(3).strip()
+        items_text = m.group(5).strip()
+        if title in ("섹션명", "-") or not title:
+            continue
+        sections.append({
+            "number": num,
+            "title": title,
+            "kind_label": kind_label,
+            "required_fields": _split_items(items_text),
+            "guide": items_text,
+        })
+
+    # 2) `### 섹션 N: 제목` 상세 병합 — guide 에 추가 정보
+    detail_re = _re.compile(
+        r"###\s*섹션\s*(\d+)\s*[:：]\s*([^\n]+)\n(.+?)(?=\n###\s*섹션|\Z)",
+        _re.DOTALL,
+    )
+    details: dict[str, str] = {}
+    for m in detail_re.finditer(raw):
+        num = m.group(1).strip()
+        body = m.group(3).strip()
+        details[num] = body[:800]
+
+    for s in sections:
+        if s["number"] in details:
+            s["author_notes"] = details[s["number"]]
+            s["guide"] = (s.get("guide", "") + " / " + details[s["number"]])[:600]
+
+    # kind_label 로 서술 섹션만 필터링 (체크리스트·정보입력 제외)
+    narrative = [s for s in sections if s.get("kind_label", "").startswith(("서술", "서술+표"))]
+    return narrative or sections
+
+
+def _split_items(text: str) -> list[str]:
+    import re as _re
+
+    parts = _re.split(r"[,·]|\s{2,}", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
 def load_form(project_dir: Path | str) -> FormContext | None:
     """양식 로드. 탐색 순서:
-    1. `00-input/form-ref.json` (asst/jw 신규 규약)
+    1. `00-input/form-ref.json` (asst/jw 신규 규약) — 있으면 template-map.md 도 병합
     2. `00-form/*.json` (구버전)
     3. `00-form/*.md` (메타 부재 시 최초 md)
     """
@@ -302,7 +381,8 @@ def load_form(project_dir: Path | str) -> FormContext | None:
             data = json.loads(raw)
             if isinstance(data, dict):
                 form_id = data.get("form_id") or ref_json.stem
-                return FormContext(form_id=form_id, path=ref_json, raw=raw, meta=data)
+                fc = FormContext(form_id=form_id, path=ref_json, raw=raw, meta=data)
+                return _merge_template_map(root, fc)
         except (OSError, json.JSONDecodeError):
             pass
 
