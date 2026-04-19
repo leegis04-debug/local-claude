@@ -79,17 +79,22 @@ class DuckStore:
     def insert_node(self, node: Node) -> None:
         """Integrity Layer: content_hash/prev_hash 자동 계산 후 저장.
 
-        중복 방지: 같은 `(source_namespace, content_hash)` 노드가 이미 있으면 skip
-        하고 기존 node.id 를 입력 `node` 에 반영 (dedupe)."""
+        중복 방지: 같은 `(source_namespace, text)` 노드가 이미 있으면 skip 하고
+        기존 node.id 를 입력 `node` 에 반영. content_hash 는 node.id/created_at 을
+        포함하므로 재ingest 마다 달라 dedupe 키로 부적합 → text 기반.
+
+        chunker 는 파일의 섹션/문단 단위로 쪼개므로 텍스트가 충분히 길어 중복 희박.
+        명시적 fresh insert 가 필요하면 `allow_dedup=False` 로 호출할 수 있도록
+        추후 확장 가능."""
 
         # content_hash 비어있으면 계산
         if not node.content_hash:
             node.content_hash = compute_content_hash(node)
         with self.lock:
-            # 중복 검사 (같은 ns + content_hash 이미 있으면 기존 id 재사용)
+            # 중복 검사 (같은 ns + 완전 동일 text 이미 있으면 기존 id 재사용)
             existing = self.conn.execute(
-                "SELECT id FROM node WHERE source_namespace = ? AND content_hash = ? LIMIT 1",
-                [node.source_namespace, node.content_hash],
+                "SELECT id FROM node WHERE source_namespace = ? AND text = ? LIMIT 1",
+                [node.source_namespace, node.text],
             ).fetchone()
             if existing:
                 node.id = existing[0]
