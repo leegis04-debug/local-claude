@@ -112,6 +112,79 @@ def status() -> None:
 
 
 @app.command()
+def search(
+    query: str = typer.Argument(..., help="검색 쿼리"),
+    top_k: int = typer.Option(5, "--k", help="상위 개수"),
+    namespace: str = typer.Option(None, "--ns", help="특정 namespace 로 제한"),
+    mode: str = typer.Option("auto", "--mode", help="remote|local|auto"),
+) -> None:
+    """semantic search. remote 면 g-serve `/search/hybrid` 호출, local 은 gravity 계산."""
+    mode_norm = (mode or "auto").strip().lower()
+    if mode_norm not in ("remote", "local", "auto"):
+        typer.echo("invalid --mode", err=True)
+        raise typer.Exit(2)
+
+    use_remote = False
+    if mode_norm in ("remote", "auto"):
+        try:
+            from gstar.enrich.g_cache import _remote_available
+            use_remote = _remote_available() if mode_norm == "auto" else True
+        except Exception:
+            use_remote = mode_norm == "remote"
+
+    if use_remote:
+        try:
+            from gstar.client import GClient
+            c = GClient()
+            try:
+                hits = c.search(query, top_k=top_k, namespace=namespace)
+            finally:
+                c.close()
+            typer.echo("[remote]")
+            for h in hits:
+                text = (h.text or "").replace("\n", " ")[:80]
+                typer.echo(f"{h.score:.3f}  [{h.namespace[:12]:12s}]  {text}")
+            return
+        except Exception as e:
+            if mode_norm == "remote":
+                typer.echo(f"원격 검색 실패: {e}", err=True)
+                raise typer.Exit(4)
+            typer.echo(f"(원격 실패, 로컬 폴백: {str(e)[:80]})", err=True)
+
+    from gstar.embedding.sbert import SBertEmbedder
+    from gstar.gravity.field import compute_gravity
+    from gstar.schema import Goal
+
+    paths = Paths.load()
+    if not paths.db.exists():
+        typer.echo("먼저 `g init` 을 실행하세요.")
+        raise typer.Exit(1)
+    weights = Weights.load(paths.config)
+    embedder = SBertEmbedder()
+    faiss = FaissStore(paths.faiss, dim=embedder.dim)
+    store = DuckStore(paths.db)
+    try:
+        goal = Goal(text=query, kind="proposal")
+        emb = embedder.encode([query])[0]
+        entries = compute_gravity(goal, emb, store, faiss, weights)
+        shown = 0
+        typer.echo("[local]")
+        for e in entries:
+            if shown >= top_k:
+                break
+            node = store.get_node(e.node_id)
+            if node is None:
+                continue
+            if namespace and node.source_namespace != namespace:
+                continue
+            text = (node.text or "").replace("\n", " ")[:80]
+            typer.echo(f"{e.total:.3f}  [{node.source_namespace[:12]:12s}]  {text}")
+            shown += 1
+    finally:
+        store.close()
+
+
+@app.command()
 def ingest(
     path: Path = typer.Argument(..., exists=True, help="파일 또는 디렉토리"),
     root: Path = typer.Option(
@@ -123,16 +196,20 @@ def ingest(
     namespace: str = typer.Option(
         None, "--ns", help="source_namespace. 미지정 시 현재 활성 namespace"
     ),
+    mode: str = typer.Option(
+        "auto", "--mode",
+        help="remote|local|auto. remote=g-serve 원격, local=맥북 DB, auto=원격 가능 시 원격",
+    ),
 ) -> None:
-    """문서를 fact/entity 노드로 분해하고 관계를 저장한다."""
+    """문서를 fact/entity 노드로 분해하고 관계를 저장한다.
+
+    --mode auto (기본): g-serve 가 응답하면 원격 ingest, 아니면 로컬 폴백.
+    --mode remote: 원격만 시도. 실패 시 에러.
+    --mode local: 로컬 DuckStore 직접.
+    """
 
     from gstar.embedding.sbert import SBertEmbedder
     from gstar.ingest.pipeline import ingest_path
-
-    paths = Paths.load()
-    if not paths.db.exists():
-        typer.echo("먼저 `g init` 을 실행하세요.")
-        raise typer.Exit(1)
 
     # --ns 미지정 시 ctx 활성 context 의 gstar.namespace 를 힌트로 사용.
     if namespace is None:
@@ -140,6 +217,70 @@ def ingest(
         if ctx_ns:
             namespace = ctx_ns
             typer.echo(f"(ctx 활성 context 기반 namespace: {namespace})", err=True)
+
+    mode_norm = (mode or "auto").strip().lower()
+    if mode_norm not in ("remote", "local", "auto"):
+        typer.echo(f"invalid --mode: {mode}. remote|local|auto 중 하나.", err=True)
+        raise typer.Exit(2)
+
+    use_remote = False
+    if mode_norm in ("remote", "auto"):
+        try:
+            from gstar.enrich.g_cache import _remote_available
+            use_remote = _remote_available() if mode_norm == "auto" else True
+        except Exception:
+            use_remote = mode_norm == "remote"
+
+    if use_remote:
+        try:
+            from gstar.client import GClient
+
+            md_paths: list[Path] = []
+            if path.is_file() and path.suffix.lower() in (".md", ".markdown", ".txt"):
+                md_paths = [path]
+            elif path.is_dir():
+                md_paths = sorted(p for p in path.rglob("*.md") if p.is_file())
+            if not md_paths:
+                typer.echo("원격 ingest 는 .md 파일만 지원합니다. --mode local 사용.", err=True)
+                raise typer.Exit(3)
+            results = []
+            for p in md_paths:
+                try:
+                    body = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                results.append({
+                    "url": f"file://{p.resolve()}",
+                    "title": p.stem,
+                    "snippet": body[:400],
+                    "content": body,
+                })
+            c = GClient()
+            try:
+                resp = c.ingest_web(
+                    query=f"cli:ingest:{path.name}",
+                    results=results,
+                    namespace=namespace or "web_cache",
+                    ttl_days=0,
+                )
+            finally:
+                c.close()
+            typer.echo("[remote]")
+            typer.echo(f"files:    {len(md_paths)}")
+            typer.echo(f"facts:    {resp.get('facts', 0)}")
+            typer.echo(f"entities: {resp.get('entities', 0)}")
+            typer.echo(f"edges:    {resp.get('edges', 0)}")
+            return
+        except Exception as e:
+            if mode_norm == "remote":
+                typer.echo(f"원격 ingest 실패: {e}", err=True)
+                raise typer.Exit(4)
+            typer.echo(f"(원격 실패, 로컬 폴백: {str(e)[:80]})", err=True)
+
+    paths = Paths.load()
+    if not paths.db.exists():
+        typer.echo("먼저 `g init` 을 실행하세요.")
+        raise typer.Exit(1)
 
     embedder = SBertEmbedder()
     # init 시 dim 이 기본값(384)이 아니면 차원 미스매치 발생. 여기서 보정.
@@ -159,6 +300,7 @@ def ingest(
     finally:
         store.close()
 
+    typer.echo("[local]")
     typer.echo(f"files:    {report.files_scanned}")
     typer.echo(f"facts:    {report.facts}")
     typer.echo(f"entities: {report.entities}")

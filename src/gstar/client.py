@@ -31,8 +31,12 @@ class GClient:
     def close(self) -> None:
         self.http.close()
 
-    def health(self) -> dict:
-        return self.http.get("/health").raise_for_status().json()
+    def health(self, *, timeout: float | None = 2.0) -> dict:
+        """서버 가용성 ping. auto 폴백 감지용 — 짧은 timeout 권장."""
+        kwargs: dict = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self.http.get("/health", **kwargs).raise_for_status().json()
 
     def search(self, query: str, top_k: int = 5, namespace: str | None = None) -> list[Hit]:
         body: dict = {"query": query, "top_k": top_k}
@@ -66,6 +70,42 @@ class GClient:
 
     def verify_chain(self, namespace: str) -> dict:
         r = self.http.get("/verify/chain", params={"ns": namespace})
+        r.raise_for_status()
+        return r.json()
+
+    def ingest_web(
+        self,
+        query: str,
+        results: list[dict],
+        *,
+        namespace: str = "web_cache",
+        ttl_days: int = 30,
+        timeout: float | None = 60.0,
+    ) -> dict:
+        """Web→G 자동 캐시 bulk ingest. cache_first_web_search 원격 경로가 호출.
+
+        `results` 는 `[{"url","title","snippet","content"}]`. content 는 맥북이
+        `web_fetch` 로 완성한 본문 — 서버는 fetch 하지 않음. 반환: facts/entities/
+        edges/skipped_dedupe.
+        """
+        body = {
+            "query": query,
+            "namespace": namespace,
+            "ttl_days": ttl_days,
+            "results": [
+                {
+                    "url": r.get("url", ""),
+                    "title": r.get("title", ""),
+                    "snippet": r.get("snippet", ""),
+                    "content": r.get("content") or r.get("snippet", ""),
+                }
+                for r in results
+            ],
+        }
+        kwargs: dict = {"json": body}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        r = self.http.post("/ingest/web", **kwargs)
         r.raise_for_status()
         return r.json()
 

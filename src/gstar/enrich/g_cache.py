@@ -17,6 +17,8 @@ Env toggles:
 - GP_WEB_FETCH_FULL=on|off    (기본 on) — snippet 만 쓰지 말고 web_fetch 본문 보강
 - GP_WEB_CACHE_TTL_DAYS=30    — URL 재인제스트 방지 TTL (이 기간 내 같은 URL skip)
 - GP_WEB_FORCE_FRESH=on|off   (기본 off) — cache_first 우회하고 강제 웹 호출
+- GP_WEB_REMOTE=on|off|auto   (기본 auto) — G 접근 경로. auto 는 health ping 성공 시 원격
+- GP_WEB_REMOTE_TTL=60        — auto 모드의 availability 세션 캐시 TTL(초)
 """
 
 from __future__ import annotations
@@ -68,6 +70,183 @@ def _env_int(key: str, default: int) -> int:
         return int(os.environ[key])
     except (KeyError, ValueError):
         return default
+
+
+_REMOTE_AVAIL: dict[str, Any] = {"ok": None, "checked_at": 0.0}
+
+
+def _remote_mode() -> str:
+    """현재 env 의 `GP_WEB_REMOTE` 정규화 ('on'|'off'|'auto')."""
+    v = (os.environ.get("GP_WEB_REMOTE") or "auto").strip().lower()
+    if v in ("1", "on", "true", "yes", "y", "remote"):
+        return "on"
+    if v in ("0", "off", "false", "no", "n", "local"):
+        return "off"
+    return "auto"
+
+
+def _ctx_server_url() -> str | None:
+    """현 ctx context 의 `gstar.server_url`. env 우선, 없으면 ctx TOML. None=미설정.
+
+    빈 문자열("") 반환은 "명시적 offline" — offline context 에서 server_url="" 로
+    설정하면 health ping 시도조차 하지 않고 로컬로 분기.
+    """
+    env = os.environ.get("GSTAR_SERVER_URL")
+    if env is not None:
+        return env.strip()
+    try:
+        from ctx.config import Paths as CtxPaths
+        from ctx.context import current_context_name, get_key_path, load_context
+        cpaths = CtxPaths.load()
+        if cpaths.current.exists():
+            name = current_context_name(cpaths)
+            if name:
+                data = load_context(name, cpaths)
+                val = get_key_path(data, "gstar.server_url")
+                if val is not None:
+                    return str(val).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _remote_available() -> bool:
+    """auto 모드에서 원격 G 가용성 감지. 60초(또는 GP_WEB_REMOTE_TTL) 세션 캐시.
+
+    - `GP_WEB_REMOTE=on`: 항상 True (호출부가 실패 시 폴백 책임)
+    - `GP_WEB_REMOTE=off`: 항상 False
+    - `GP_WEB_REMOTE=auto`: ctx `gstar.server_url` 이 빈 문자열이면 즉시 False(offline
+      context). 아니면 health ping 결과를 TTL 내 재사용. 실패 1회 → 즉시 False,
+      TTL 경과 후 재검사.
+    """
+    mode = _remote_mode()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    # offline context 명시 처리 (빈 문자열로 설정)
+    ctx_url = _ctx_server_url()
+    if ctx_url == "":
+        return False
+    ttl = _env_int("GP_WEB_REMOTE_TTL", 60)
+    now = time.time()
+    if _REMOTE_AVAIL["ok"] is not None and (now - _REMOTE_AVAIL["checked_at"]) < ttl:
+        return bool(_REMOTE_AVAIL["ok"])
+    try:
+        import gstar.client as _gc
+        c = _gc.from_env()
+        try:
+            c.health(timeout=2.0)
+            ok = True
+        finally:
+            c.close()
+    except Exception:
+        ok = False
+    _REMOTE_AVAIL["ok"] = ok
+    _REMOTE_AVAIL["checked_at"] = now
+    return ok
+
+
+def _invalidate_remote_cache() -> None:
+    """원격 호출이 실패한 순간 다음 호출은 즉시 재검사하도록."""
+    _REMOTE_AVAIL["ok"] = None
+    _REMOTE_AVAIL["checked_at"] = 0.0
+
+
+async def _g_precheck_remote(
+    query: str, search_ns: str, min_score: float, top_k: int
+) -> list[dict]:
+    """원격 g-serve `/search/hybrid` 를 통한 G 검색."""
+    try:
+        import gstar.client as _gc
+    except ImportError:
+        return []
+    ns = None if search_ns in ("", "*", "all") else search_ns
+    try:
+        c = _gc.from_env()
+        try:
+            hits = c.search(query, top_k=max(top_k * 6, 30), namespace=ns)
+        finally:
+            c.close()
+    except Exception:
+        _invalidate_remote_cache()
+        raise
+    out: list[dict] = []
+    seen: set[str] = set()
+    for h in hits:
+        if h.score < min_score:
+            continue
+        sig = (h.text or "")[:120]
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(
+            {
+                "title": (h.text[:80] + "…") if len(h.text) > 80 else h.text,
+                "url": f"gstar://node/{h.node_id}",
+                "snippet": h.text[:400],
+                "content": h.text,
+                "score": float(h.score),
+                "_source": "g_cache_remote",
+                "_namespace": h.namespace,
+                "node_id": h.node_id,
+            }
+        )
+        if len(out) >= top_k * 3:
+            break
+    return out
+
+
+async def _ingest_web_results_remote(
+    query: str,
+    results: list[dict],
+    namespace: str,
+    *,
+    fetch_full: bool,
+    ttl_days: int,
+) -> tuple[int, int]:
+    """원격 g-serve `POST /ingest/web` 를 통한 bulk ingest.
+
+    맥북이 `fetch_full=True` 시 web_fetch 완료한 content 를 서버에 던진다.
+    서버는 fetch 하지 않음 (네트워크 왕복 1회 + Claude WebFetch 안정성 활용).
+    """
+    if not results:
+        return 0, 0
+    # snippet 만 있고 content 짧으면 맥북에서 web_fetch 로 본문 보강
+    enriched: list[dict] = []
+    for r in results:
+        body = r.get("content") or r.get("snippet") or ""
+        url = (r.get("url") or "").strip()
+        if fetch_full and len(body) < 1500 and url.startswith("http"):
+            try:
+                fetched = await web_fetch(url, max_chars=20_000)
+                if fetched and len(fetched) > len(body):
+                    body = fetched
+            except Exception:
+                pass
+        enriched.append(
+            {
+                "url": url,
+                "title": r.get("title", ""),
+                "snippet": r.get("snippet", ""),
+                "content": body,
+            }
+        )
+
+    try:
+        import gstar.client as _gc
+    except ImportError:
+        return 0, 0
+    try:
+        c = _gc.from_env()
+        try:
+            resp = c.ingest_web(query, enriched, namespace=namespace, ttl_days=ttl_days)
+        finally:
+            c.close()
+    except Exception:
+        _invalidate_remote_cache()
+        raise
+    return int(resp.get("facts", 0)), int(resp.get("skipped_dedupe", 0))
 
 
 async def _g_precheck(
@@ -353,10 +532,21 @@ async def cache_first_web_search(
     min_hits = _env_int("GP_WEB_MIN_HITS", 3) if min_hits is None else min_hits
     min_score = _env_float("GP_WEB_MIN_SCORE", 0.55) if min_score is None else min_score
 
+    # 원격/로컬 라우팅 결정: GP_WEB_REMOTE=on|off|auto
+    use_remote = _remote_available()
+
     g_hits: list[dict] = []
     if cache_first and not force_web:
         try:
-            g_hits = await _g_precheck(query, search_ns, min_score, top_k)
+            if use_remote:
+                try:
+                    g_hits = await _g_precheck_remote(query, search_ns, min_score, top_k)
+                except Exception:
+                    # 원격 실패 → 캐시 무효화 + 로컬 폴백
+                    use_remote = False
+                    g_hits = await _g_precheck(query, search_ns, min_score, top_k)
+            else:
+                g_hits = await _g_precheck(query, search_ns, min_score, top_k)
         except Exception:
             g_hits = []
 
@@ -381,9 +571,20 @@ async def cache_first_web_search(
     skipped_dedupe = 0
     if auto_ingest and web_results:
         try:
-            ingested, skipped_dedupe = await _ingest_web_results(
-                query, web_results, namespace, fetch_full=fetch_full, ttl_days=ttl_days
-            )
+            if use_remote:
+                try:
+                    ingested, skipped_dedupe = await _ingest_web_results_remote(
+                        query, web_results, namespace, fetch_full=fetch_full, ttl_days=ttl_days
+                    )
+                except Exception:
+                    # 원격 ingest 실패 → 로컬 폴백
+                    ingested, skipped_dedupe = await _ingest_web_results(
+                        query, web_results, namespace, fetch_full=fetch_full, ttl_days=ttl_days
+                    )
+            else:
+                ingested, skipped_dedupe = await _ingest_web_results(
+                    query, web_results, namespace, fetch_full=fetch_full, ttl_days=ttl_days
+                )
         except Exception:
             ingested, skipped_dedupe = 0, 0
 

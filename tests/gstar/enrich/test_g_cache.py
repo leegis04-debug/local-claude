@@ -199,3 +199,109 @@ def test_cache_miss_triggers_web_and_ingest(monkeypatch, _patched):
     # 인덱스에 등록됐는지 확인
     idx = g_cache._load_url_index()
     assert any(v.get("url") == "https://new.com" for v in idx.values())
+
+
+# ───── Phase 6: 원격 G 경로 분기 테스트 ─────
+
+def test_remote_mode_off_forces_local(monkeypatch):
+    monkeypatch.setenv("GP_WEB_REMOTE", "off")
+    assert g_cache._remote_available() is False
+
+
+def test_remote_mode_on_returns_true(monkeypatch):
+    monkeypatch.setenv("GP_WEB_REMOTE", "on")
+    assert g_cache._remote_available() is True
+
+
+def test_remote_mode_auto_falls_back_on_connection_error(monkeypatch):
+    monkeypatch.setenv("GP_WEB_REMOTE", "auto")
+    monkeypatch.delenv("GSTAR_SERVER_URL", raising=False)
+    # 인덱스 리셋
+    g_cache._invalidate_remote_cache()
+
+    class _BrokenClient:
+        def health(self, timeout=None):
+            raise RuntimeError("connection refused")
+        def close(self): pass
+
+    monkeypatch.setattr(g_cache, "_ctx_server_url", lambda: None)
+    import gstar.client as client_mod
+    monkeypatch.setattr(client_mod, "from_env", lambda: _BrokenClient())
+    assert g_cache._remote_available() is False
+
+
+def test_offline_context_skips_ping(monkeypatch):
+    """ctx 에 gstar.server_url='' 이면 health ping 조차 시도 안 함."""
+    monkeypatch.setenv("GP_WEB_REMOTE", "auto")
+    monkeypatch.setenv("GSTAR_SERVER_URL", "")  # offline 명시
+    g_cache._invalidate_remote_cache()
+
+    import gstar.client as client_mod
+    def _should_not_call():
+        raise AssertionError("from_env should not be called in offline mode")
+    monkeypatch.setattr(client_mod, "from_env", lambda: _should_not_call())
+    assert g_cache._remote_available() is False
+
+
+def test_remote_precheck_routes_through_gclient(monkeypatch, _patched):
+    """GP_WEB_REMOTE=on 상태에서 _g_precheck_remote 가 호출되고 GClient.search 경유."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _StubHit:
+        text: str
+        score: float
+        source: str
+        node_id: str
+        content_hash: str
+        namespace: str
+
+    class _StubClient:
+        searched: list = []
+        def search(self, query, top_k=5, namespace=None):
+            _StubClient.searched.append((query, top_k, namespace))
+            return [_StubHit(text=f"remote fact {i}", score=0.9, source="s",
+                             node_id=f"n{i}", content_hash="h", namespace="web_cache")
+                    for i in range(10)]
+        def close(self): pass
+
+    import gstar.client as client_mod
+    monkeypatch.setattr(client_mod, "from_env", lambda: _StubClient())
+    monkeypatch.setenv("GP_WEB_REMOTE", "on")
+
+    async def _fake_web_search(*a, **kw):  # 호출되면 실패
+        raise AssertionError("web_search should not be called — remote cache should HIT")
+    monkeypatch.setattr(g_cache, "web_search", _fake_web_search)
+
+    r = asyncio.run(g_cache.cache_first_web_search("q", backend="brave", top_k=5, min_hits=3))
+    assert r.from_cache is True
+    assert r.g_hits >= 3
+    # remote 경로가 실제 호출됐는지
+    assert len(_StubClient.searched) >= 1
+
+
+def test_remote_ingest_falls_back_on_http_error(monkeypatch, _patched):
+    """원격 ingest HTTP 에러 시 로컬 ingest 로 폴백, ingested 수 0 아님."""
+    async def _fake_g_precheck(*a, **kw):
+        return []
+    async def _fake_web_search(*a, **kw):
+        return [{"url": "https://fallback.com", "title": "F", "snippet": "s", "content": "c" * 1800}]
+    monkeypatch.setattr(g_cache, "_g_precheck", _fake_g_precheck)
+    monkeypatch.setattr(g_cache, "web_search", _fake_web_search)
+
+    class _BrokenIngest:
+        def search(self, *a, **kw):
+            return []  # 이 경로로 오지 않는 가짜
+        def ingest_web(self, *a, **kw):
+            raise RuntimeError("500 Internal Server Error")
+        def close(self): pass
+
+    import gstar.client as client_mod
+    monkeypatch.setattr(client_mod, "from_env", lambda: _BrokenIngest())
+    monkeypatch.setenv("GP_WEB_REMOTE", "on")
+
+    r = asyncio.run(g_cache.cache_first_web_search("fallback-only query", backend="brave", top_k=5))
+    # 로컬 폴백으로 ingest_path 가 호출되어 ingested > 0
+    assert r.from_cache is False
+    assert r.web_hits == 1
+    assert r.ingested > 0

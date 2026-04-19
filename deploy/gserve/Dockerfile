@@ -31,4 +31,5 @@ EXPOSE 9999
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:9999/health || exit 1
 
-CMD ["uvicorn", "gstar.serve:app", "--host", "0.0.0.0", "--port", "9999"]
+# --workers 1 강제: DuckDB single-writer 전제. 다중 worker 시 락 충돌·corruption 위험.
+CMD ["uvicorn", "gstar.serve:app", "--host", "0.0.0.0", "--port", "9999", "--workers", "1"]

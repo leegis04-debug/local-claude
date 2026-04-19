@@ -4,12 +4,19 @@
 실행:
     g serve --port 9999
     또는
-    uvicorn gstar.serve:app --host 0.0.0.0 --port 9999
+    uvicorn gstar.serve:app --host 0.0.0.0 --port 9999 --workers 1
+
+`--workers 1` 강제: DuckDB 는 single-writer 전제. 다중 worker 는 락 충돌.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shutil
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -35,9 +42,17 @@ class AppState:
         self.paths = Paths.load()
         self.paths.ensure()
         self.store = DuckStore(self.paths.db)
-        # dim 은 실제 인덱스 파일이 결정. 없으면 default.
         self.faiss = FaissStore(self.paths.faiss, dim=EMBED_DIM_DEFAULT)
         self.weights = Weights.load(self.paths.config)
+        self._embedder: Any = None  # lazy: SBERT 로드는 무거워 lifespan 에서 프리로드
+
+    @property
+    def embedder(self) -> Any:
+        """SBertEmbedder 싱글톤. lifespan 에서 preload, 이후 /search·/ingest 재사용."""
+        if self._embedder is None:
+            from gstar.embedding.sbert import SBertEmbedder
+            self._embedder = SBertEmbedder()
+        return self._embedder
 
     def close(self) -> None:
         self.store.close()
@@ -56,7 +71,13 @@ def get_state() -> AppState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_state()
+    s = get_state()
+    # SBERT 프리로드 — /search, /ingest/web 첫 호출 지연 제거 (3-8초 → <50ms)
+    if os.environ.get("GSTAR_PRELOAD_EMBEDDER", "on").lower() not in ("0", "off", "false", "no"):
+        try:
+            _ = s.embedder
+        except Exception:
+            pass
     yield
     if _state is not None:
         _state.close()
@@ -121,15 +142,10 @@ def health() -> dict[str, Any]:
 def search_hybrid(req: SearchRequest):
     """Gateway 호환 포맷. 임베딩 없는 query 는 400."""
     s = get_state()
-    # query 를 Goal 로 취급해 즉석 임베딩을 얻는다. 서버 쪽에서 임베딩 모델 필요.
     try:
-        from gstar.embedding.sbert import SBertEmbedder
-    except Exception as e:
+        goal_emb = s.embedder.encode([req.query])[0]
+    except ImportError as e:
         raise HTTPException(503, f"embedder unavailable: {e}")
-
-    embedder = SBertEmbedder()
-    try:
-        goal_emb = embedder.encode([req.query])[0]
     except Exception as e:
         raise HTTPException(500, f"encode failed: {e}")
 
@@ -381,3 +397,125 @@ def list_entities(
         }
         for e in entities
     ]
+
+
+# -------- /ingest/web (Web→G 자동 캐시 서버측 ingest) --------
+
+
+class WebIngestItem(BaseModel):
+    url: str
+    title: str = ""
+    snippet: str = ""
+    content: str = ""
+
+
+class WebIngestRequest(BaseModel):
+    query: str
+    namespace: str = "web_cache"
+    ttl_days: int = 30
+    results: list[WebIngestItem]
+
+
+class WebIngestResponse(BaseModel):
+    facts: int
+    entities: int
+    edges: int
+    skipped_dedupe: int
+
+
+def _web_url_index_path(s: AppState) -> Path:
+    """NAS(또는 GSTAR_HOME) 위 전역 URL 인덱스. TTL dedupe 용."""
+    return s.paths.home / "web_url_index.json"
+
+
+def _load_web_url_index(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_web_url_index(path: Path, idx: dict[str, dict]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+@app.post("/ingest/web", response_model=WebIngestResponse)
+def ingest_web(req: WebIngestRequest):
+    """맥북 cache_first_web_search 가 원격 경로로 호출하는 bulk 엔드포인트.
+
+    계약: 맥북이 web_fetch 완료된 content 를 보낸다. 서버는 fetch 하지 않음.
+    동작: URL 인덱스 TTL dedupe → staging md 작성 → ingest_path → 인덱스 갱신.
+    """
+    from gstar.ingest.pipeline import ingest_path
+
+    s = get_state()
+    index_path = _web_url_index_path(s)
+    index = _load_web_url_index(index_path)
+    now_ts = int(time.time())
+    ttl_sec = max(req.ttl_days, 0) * 86400
+
+    staging_root = Path(os.environ.get("GSTAR_STAGING", "/tmp/gstar-staging"))
+    staging = staging_root / f"{now_ts}_{uuid.uuid4().hex[:8]}"
+    staging.mkdir(parents=True, exist_ok=True)
+
+    new_urls: list[tuple[str, str]] = []
+    skipped = 0
+    try:
+        for item in req.results:
+            url = (item.url or "").strip()
+            if not url:
+                continue
+            uid = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+            rec = index.get(uid)
+            if rec and rec.get("ingested") and ttl_sec > 0:
+                age = now_ts - int(rec.get("fetched_at", 0))
+                if age < ttl_sec:
+                    skipped += 1
+                    continue
+            body = item.content or item.snippet or ""
+            md = (
+                f"<!-- source_url: {url} -->\n"
+                f"<!-- query: {req.query} -->\n"
+                f"<!-- fetched_at: {now_ts} -->\n"
+                f"# {item.title}\n\n"
+                f"URL: {url}\n\n"
+                f"> {item.snippet}\n\n"
+                f"{body}\n"
+            )
+            (staging / f"{uid}.md").write_text(md, encoding="utf-8")
+            new_urls.append((url, uid))
+
+        if not new_urls:
+            return WebIngestResponse(facts=0, entities=0, edges=0, skipped_dedupe=skipped)
+
+        try:
+            report = ingest_path(
+                staging,
+                store=s.store,
+                faiss=s.faiss,
+                embedder=s.embedder,
+                namespace=req.namespace,
+                track="document",
+            )
+            s.faiss.save()
+        except Exception as exc:
+            raise HTTPException(500, f"ingest failed: {exc}")
+
+        for url, uid in new_urls:
+            index[uid] = {"url": url, "fetched_at": now_ts, "ingested": True, "ns": req.namespace}
+        _save_web_url_index(index_path, index)
+
+        return WebIngestResponse(
+            facts=report.facts,
+            entities=report.entities,
+            edges=report.edges,
+            skipped_dedupe=skipped,
+        )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

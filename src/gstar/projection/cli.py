@@ -44,34 +44,102 @@ def _reverse_ingest(
     namespace: str,
     track: str,
 ) -> dict | None:
-    """생성된 md 를 G 본체(node/edge) 에 역삽입. 이후 단계 retrieval 에서 재활용."""
+    """생성된 md 를 G 본체(node/edge) 에 역삽입. 이후 단계 retrieval 에서 재활용.
+
+    원격 g-serve 가 가용하면 `GClient.ingest_web` 을 통해 서버 측 인덱스에 기록.
+    실패 또는 `GP_WEB_REMOTE=off` 면 로컬 `ingest_path` 로 폴백.
+    """
     if not output_path or not output_path.exists():
         return None
+
+    try:
+        from gstar.enrich.g_cache import _remote_available
+        use_remote = _remote_available()
+    except Exception:
+        use_remote = False
+
+    if use_remote:
+        remote = _reverse_ingest_remote(output_path, namespace=namespace, track=track)
+        if remote is not None and "error" not in remote:
+            return remote
+
     try:
         from gstar.embedding.sbert import SBertEmbedder
         from gstar.ingest.pipeline import ingest_path
 
         embedder = SBertEmbedder()
         faiss = FaissStore(paths.faiss, dim=embedder.dim)
-        try:
-            report = ingest_path(
-                output_path,
-                store=store,
-                faiss=faiss,
-                embedder=embedder,
-                namespace=namespace,
-                track=track,
-            )
-            faiss.save()
-            return {
-                "facts": report.facts,
-                "entities": report.entities,
-                "edges": report.edges,
-            }
-        finally:
-            pass
+        report = ingest_path(
+            output_path,
+            store=store,
+            faiss=faiss,
+            embedder=embedder,
+            namespace=namespace,
+            track=track,
+        )
+        faiss.save()
+        return {
+            "facts": report.facts,
+            "entities": report.entities,
+            "edges": report.edges,
+        }
     except Exception as e:
         return {"error": str(e)[:200]}
+
+
+def _reverse_ingest_remote(
+    output_path: Path, *, namespace: str, track: str
+) -> dict | None:
+    """md 파일/디렉터리 → GClient.ingest_web payload 로 변환해 서버 경로로 전송."""
+    try:
+        from gstar.client import GClient
+    except ImportError:
+        return None
+
+    md_paths: list[Path] = []
+    if output_path.is_file() and output_path.suffix.lower() in (".md", ".markdown"):
+        md_paths = [output_path]
+    elif output_path.is_dir():
+        md_paths = sorted(p for p in output_path.rglob("*.md") if p.is_file())
+    if not md_paths:
+        return None
+
+    results: list[dict] = []
+    for p in md_paths:
+        try:
+            body = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        title = p.stem
+        results.append({
+            "url": f"file://{p.resolve()}",
+            "title": title,
+            "snippet": body[:400],
+            "content": body,
+        })
+    if not results:
+        return None
+
+    try:
+        c = GClient()
+        try:
+            resp = c.ingest_web(
+                query=f"projection:{track}",
+                results=results,
+                namespace=namespace,
+                ttl_days=0,  # projection 산출물은 TTL dedupe 안 함 (매번 반영)
+            )
+        finally:
+            c.close()
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+    return {
+        "facts": int(resp.get("facts", 0)),
+        "entities": int(resp.get("entities", 0)),
+        "edges": int(resp.get("edges", 0)),
+        "via": "remote",
+    }
 
 
 def _maybe_enrich_start(topic: str, store: DuckStore, pid: str, track: str):
