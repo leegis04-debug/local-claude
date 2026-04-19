@@ -11,6 +11,7 @@ from gstar.forms.question_tree import QuestionNode
 from gstar.projection.cli import (
     _find_form_md,
     _question_goal,
+    _resolve_stage_dir,
     _should_answer_question,
 )
 
@@ -83,3 +84,20 @@ def test_question_goal_empty_input():
     q = _mk_q("heading", title="t1")
     g = _question_goal(q, user_input="", stage="spec")
     assert "[spec]" in g and "t1" in g
+
+
+def test_resolve_stage_dir_matches_existing(tmp_path: Path):
+    (tmp_path / "02-debate").mkdir()
+    (tmp_path / "03-structure-custom").mkdir()
+    assert _resolve_stage_dir(tmp_path, "debate").name == "02-debate"
+    # 사용자가 suffix 커스텀한 경우도 매칭
+    assert _resolve_stage_dir(tmp_path, "structure").name == "03-structure-custom"
+
+
+def test_resolve_stage_dir_creates_nn_when_missing(tmp_path: Path):
+    assert _resolve_stage_dir(tmp_path, "idea").name == "01-idea"
+    assert _resolve_stage_dir(tmp_path, "proposal").name == "07-proposal"
+
+
+def test_resolve_stage_dir_unknown_stage_uses_nn_placeholder(tmp_path: Path):
+    assert _resolve_stage_dir(tmp_path, "xyz").name == "NN-xyz"

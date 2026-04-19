@@ -413,6 +413,30 @@ def verify_cmd(output: Path = typer.Argument(..., exists=True)) -> None:
         store.close()
 
 
+_STAGE_SEQ_MAP = {
+    "input": "00",
+    "idea": "01", "debate": "02", "structure": "03", "spec": "04",
+    "risk-check": "05", "experiment-plan": "06", "proposal": "07",
+    "final-doc": "08", "lab-note": "09",
+    "outline": "01", "draft": "02", "revise": "03", "finalize": "04",
+    "explore": "01", "plan": "02", "implement": "03", "test": "04", "review": "05",
+}
+
+
+def _resolve_stage_dir(project_dir: Path, stage: str) -> Path:
+    """NN-<stage> 폴더 경로 결정 (writer.py 와 동일 규약).
+
+    1) `[0-9][0-9]-<stage>*` 로 기존 폴더 매칭 (사용자가 이름 일부 커스텀한 경우도 수용)
+    2) 없으면 seq_map 기반 `01-idea` 같이 생성
+    """
+    # 기존 폴더 우선
+    for d in sorted(project_dir.glob(f"[0-9][0-9]-{stage}*")):
+        if d.is_dir():
+            return d
+    prefix = _STAGE_SEQ_MAP.get(stage, "NN")
+    return project_dir / f"{prefix}-{stage}"
+
+
 def _find_form_md(project_dir: Path) -> Path | None:
     """00-input/BASE/ 에서 양식 markdown 탐지.
 
@@ -490,7 +514,9 @@ def _run_mode_e(
     store = DuckStore(paths.db)
     gclient = gclient_from_env()
 
-    out_dir = project_dir / f"_mode_{mode}"
+    stage_dir = _resolve_stage_dir(project_dir, stage)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = stage_dir / f"_mode_{mode}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     use_questions = os.environ.get("GP_FORM_QUESTIONS", "on").lower() in {"on", "1", "true"}
@@ -550,10 +576,18 @@ def _run_mode_e(
             if i % 10 == 0:
                 typer.echo(f"  [{i}/{len(candidates)}] 진행 중...")
 
-        out_path = out_dir / f"{stage}.md"
-        out_path.write_text("\n".join(all_texts), encoding="utf-8")
-        typer.echo(f"stage 합본 저장: {out_path} ({len(all_texts)} 질문 답변)")
-        report_path = out_dir / f"{stage}.report.json"
+        # 기존 stage.md 있으면 _versions/ 로 백업 후 덮어쓰기
+        main_path = stage_dir / f"{stage}.md"
+        if main_path.exists():
+            ver_dir = stage_dir / "_versions"
+            ver_dir.mkdir(exist_ok=True)
+            n = len(list(ver_dir.glob(f"{stage}-v*.md"))) + 1
+            ver_path = ver_dir / f"{stage}-v{n}.md"
+            ver_path.write_text(main_path.read_text(encoding="utf-8"), encoding="utf-8")
+            typer.echo(f"기존 {main_path.name} → {ver_path.relative_to(stage_dir)} 백업")
+        main_path.write_text("\n".join(all_texts), encoding="utf-8")
+        typer.echo(f"stage 합본 저장: {main_path} ({len(all_texts)} 질문 답변)")
+        report_path = out_dir / "report.json"
         report_path.write_text(
             _json.dumps({"stage": stage, "questions": reports}, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -578,14 +612,21 @@ def _run_mode_e(
         mode=mode,
     )
 
-    out_path = out_dir / f"{stage}.md"
+    main_path = stage_dir / f"{stage}.md"
     if rep.projector is not None:
-        out_path.write_text(rep.projector.text, encoding="utf-8")
-        typer.echo(f"섹션 저장: {out_path}")
+        if main_path.exists():
+            ver_dir = stage_dir / "_versions"
+            ver_dir.mkdir(exist_ok=True)
+            n = len(list(ver_dir.glob(f"{stage}-v*.md"))) + 1
+            (ver_dir / f"{stage}-v{n}.md").write_text(
+                main_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        main_path.write_text(rep.projector.text, encoding="utf-8")
+        typer.echo(f"섹션 저장: {main_path}")
     else:
         typer.echo(f"[mode={mode}] Projector skip. warnings={rep.warnings}")
 
-    report_path = out_dir / f"{stage}.report.json"
+    report_path = out_dir / "report.json"
     import json as _json
     report_path.write_text(_json.dumps(rep.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
     typer.echo(f"report: {report_path}")
