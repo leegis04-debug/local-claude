@@ -168,6 +168,82 @@ class GClient:
         r.raise_for_status()
         return r.json()
 
+    # ---------- Phase D: fused wrapper + notes + worker + communities ----------
+
+    def fused_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        namespace: str | None = None,
+        use_gateway: bool = True,
+        use_g: bool = True,
+        gateway_timeout: float = 3.0,
+    ) -> list[dict]:
+        """G 상위 wrapper. G 내부 + Gateway(Qdrant+Neo4j) 결과 병합.
+
+        반환 아이템에 `_source ∈ {g, gateway_qdrant, gateway_neo4j}` 태그.
+        """
+        body: dict = {
+            "query": query,
+            "top_k": top_k,
+            "use_gateway": use_gateway,
+            "use_g": use_g,
+            "gateway_timeout": gateway_timeout,
+        }
+        if namespace:
+            body["namespace"] = namespace
+        r = self.http.post("/search/fused", json=body, timeout=gateway_timeout * 4 + 5)
+        r.raise_for_status()
+        return r.json()
+
+    def notes_add(
+        self,
+        text: str,
+        *,
+        source: str = "manual",
+        tags: list[str] | None = None,
+        namespace: str = "personal_notes",
+        track: str = "document",
+    ) -> dict:
+        body: dict = {
+            "text": text,
+            "source": source,
+            "tags": tags or [],
+            "namespace": namespace,
+            "track": track,
+        }
+        r = self.http.post("/notes", json=body, timeout=30.0)
+        r.raise_for_status()
+        return r.json()
+
+    def worker_pause(self) -> dict:
+        return self.http.post("/worker/pause").raise_for_status().json()
+
+    def worker_resume(self) -> dict:
+        return self.http.post("/worker/resume").raise_for_status().json()
+
+    def worker_status(self) -> dict:
+        return self.http.get("/worker/status").raise_for_status().json()
+
+    def worker_tick(
+        self,
+        *,
+        min_community_size: int = 3,
+        project_ids: list[str] | None = None,
+        mode: str = "per_project",
+    ) -> dict:
+        body: dict = {"min_community_size": min_community_size, "mode": mode}
+        if project_ids is not None:
+            body["project_ids"] = project_ids
+        return self.http.post("/worker/tick", json=body, timeout=120).raise_for_status().json()
+
+    def communities(self, *, project_id: str | None = None, limit: int = 50) -> list[dict]:
+        params: dict = {"limit": limit}
+        if project_id:
+            params["project_id"] = project_id
+        return self.http.get("/communities", params=params).raise_for_status().json()
+
 
 def from_env() -> GClient:
     """환경변수 `GSTAR_SERVER_URL` 또는 ctx 활성 `gstar.server_url` 기반 생성."""

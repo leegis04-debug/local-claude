@@ -21,6 +21,15 @@ case "$BACKEND" in
   *)     export GATEWAY_URL="$GW_URL" LC_GATEWAY_URL="$GW_URL" JW_RAG_BACKEND=gateway ;;
 esac
 
+# Phase C1 — G worker pause/resume hook. GP_AUTOPAUSE=off 로 비활성화 가능.
+# 실패해도 jw 실행을 막지 않도록 fire-and-forget (|| true).
+if [ "${GP_AUTOPAUSE:-on}" != "off" ]; then
+  _GP_PAUSE_URL="${G_URL}/worker/pause"
+  _GP_RESUME_URL="${G_URL}/worker/resume"
+  curl -sf -m 2 -X POST "$_GP_PAUSE_URL" >/dev/null 2>&1 || true
+  trap 'curl -sf -m 2 -X POST "$_GP_RESUME_URL" >/dev/null 2>&1 || true' EXIT
+fi
+
 # 원본 jw 찾기 (PATH 에서 shim 제외)
 ORIG_PATH="${PATH//"$_dir":/}"
 ORIG_PATH="${ORIG_PATH//:"$_dir"/}"
@@ -33,4 +42,5 @@ if [ -z "$ORIG" ]; then
   exit 127
 fi
 
-exec "$ORIG" "$@"
+# exec 대신 fork 로 실행해야 trap EXIT 의 resume 이 동작한다 (exec 는 쉘을 교체하므로 trap 증발).
+"$ORIG" "$@"

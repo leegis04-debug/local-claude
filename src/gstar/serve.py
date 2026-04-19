@@ -730,6 +730,256 @@ def worker_tick(req: TickRequest):
     return rep.to_json()
 
 
+# -------- /notes (Phase D1: G + Qdrant mirror) --------
+
+
+class NotesRequest(BaseModel):
+    text: str
+    source: str = "manual"                      # 자유 문자열 — 기록자·skill 이름 등
+    tags: list[str] = []
+    namespace: str = "personal_notes"
+    track: str = "document"
+
+
+class NotesResponse(BaseModel):
+    node_id: str
+    namespace: str
+    facts: int
+    entities: int
+    edges: int
+    mirrored_qdrant: bool
+
+
+@app.post("/notes", response_model=NotesResponse)
+def notes_add(req: NotesRequest):
+    """자유 텍스트 note → G ingest (fact/entity/edge 분해).
+
+    GP_MIRROR_QDRANT=on 이면 Gateway `/notes` 로도 proxy (Qdrant personal_notes 적재).
+    실패해도 G 저장 자체는 성공으로 반환 (mirrored_qdrant=false).
+    """
+    import tempfile
+    import urllib.error
+    import urllib.request
+
+    from gstar.ingest.pipeline import ingest_path
+
+    s = get_state()
+
+    # 1) 임시 md 파일로 wrap → ingest_path 재사용 (chunker/entity/edge 경로 공유)
+    body = req.text if req.text.strip().startswith("#") else f"# note\n\n{req.text}\n"
+    if req.tags:
+        body += f"\n<!-- tags: {', '.join(req.tags)} -->\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".md", dir="/app/state", delete=False, encoding="utf-8") as tf:
+        tf.write(body)
+        tmp_path = Path(tf.name)
+
+    try:
+        report = ingest_path(
+            tmp_path,
+            store=s.store,
+            faiss=s.faiss,
+            embedder=s.embedder,
+            namespace=req.namespace,
+            track=req.track,
+        )
+        s.faiss.save()
+    except Exception as exc:
+        raise HTTPException(500, f"note ingest failed: {exc}")
+    finally:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+    # 2) 마지막 노드 id (fact 첫 개) — 호출자가 참조 가능하도록
+    first_node_id = ""
+    with s.store.lock:
+        try:
+            row = s.store.conn.execute(
+                "SELECT id FROM node WHERE source_namespace=? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                [req.namespace],
+            ).fetchone()
+            first_node_id = row[0] if row else ""
+        except Exception:
+            first_node_id = ""
+
+    # 3) Qdrant mirror (옵션)
+    mirrored = False
+    if os.environ.get("GP_MIRROR_QDRANT", "off").lower() in {"on", "1", "true"}:
+        gw_url = os.environ.get("GATEWAY_URL", "http://100.79.251.53:8000")
+        tok = os.environ.get("ASST_TOKEN", "")
+        if tok:
+            try:
+                body_json = json.dumps(
+                    {"text": req.text, "source": f"g:{first_node_id}", "tags": ["g_mirror", *req.tags]},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                r = urllib.request.Request(
+                    f"{gw_url.rstrip('/')}/notes",
+                    data=body_json,
+                    headers={"Content-Type": "application/json", "X-Auth-Token": tok},
+                )
+                with urllib.request.urlopen(r, timeout=5) as resp:
+                    resp.read()
+                    mirrored = True
+            except Exception:
+                mirrored = False
+
+    return NotesResponse(
+        node_id=first_node_id,
+        namespace=req.namespace,
+        facts=report.facts,
+        entities=report.entities,
+        edges=report.edges,
+        mirrored_qdrant=mirrored,
+    )
+
+
+# -------- /search/fused (Phase D2: G + Gateway 통합 wrapper) --------
+
+
+class FusedSearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+    namespace: str | None = None
+    use_gateway: bool = True
+    use_g: bool = True
+    gateway_timeout: float = 3.0
+
+
+class FusedHit(BaseModel):
+    """Fused 검색 결과. `origin` 필드가 provenance 태그 ("g" | "gateway_qdrant" | "gateway_neo4j").
+
+    pydantic 은 `_` prefix 필드를 private 로 배제하므로 `origin` 으로 명명.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    text: str
+    score: float
+    source: str                             # original source_namespace or collection
+    node_id: str | None = None
+    namespace: str | None = None
+    origin: str                             # "g" | "gateway_qdrant" | "gateway_neo4j"
+
+
+@app.post("/search/fused", response_model=list[FusedHit])
+def search_fused(req: FusedSearchRequest):
+    """G + Gateway 병렬 검색 후 병합. 사용자는 상위 wrapper 만 호출.
+
+    결과에 `_source` 태그를 붙여 어디서 왔는지 추적 가능. 재랭킹은 simple:
+      - G score 는 0~1 정규화된 gravity 총점 (현재)
+      - Gateway qdrant/neo4j_vector score 는 자체 similarity. 소스별 가중:
+          g: 1.0, gateway_qdrant: 0.95, gateway_neo4j: 0.9 (tie 처리용 미세 가중)
+    """
+    import concurrent.futures
+    import urllib.error
+    import urllib.request
+
+    s = get_state()
+    hits: list[FusedHit] = []
+
+    def _run_g() -> list[FusedHit]:
+        if not req.use_g:
+            return []
+        try:
+            goal_emb = s.embedder.encode([req.query])[0]
+            tmp_goal = Goal(text=req.query, kind="proposal")
+            entries = compute_gravity(tmp_goal, goal_emb, s.store, s.faiss, s.weights)
+        except Exception as exc:
+            import traceback
+            print(f"[_run_g] gravity FAILED: {type(exc).__name__}: {exc}", flush=True)
+            traceback.print_exc()
+            return []
+        out: list[FusedHit] = []
+        for e in entries[: req.top_k * 2]:
+            try:
+                n = s.store.get_node(e.node_id)
+            except Exception:
+                continue
+            if n is None:
+                continue
+            if req.namespace and n.source_namespace != req.namespace:
+                continue
+            try:
+                out.append(
+                    FusedHit(
+                        text=n.text,
+                        score=float(e.total) * 1.0,
+                        source=f"{n.source_namespace}/{(n.attrs or {}).get('source','')}",
+                        node_id=n.id,
+                        namespace=n.source_namespace,
+                        origin="g",
+                    )
+                )
+            except Exception as exc:
+                print(f"[_run_g] FusedHit build FAILED for node {n.id}: {exc}", flush=True)
+                continue
+        return out
+
+    def _run_gateway() -> list[FusedHit]:
+        if not req.use_gateway:
+            return []
+        gw_url = os.environ.get("GATEWAY_URL", "http://100.79.251.53:8000")
+        tok = os.environ.get("ASST_TOKEN", "")
+        if not tok:
+            return []
+        body = json.dumps({"query": req.query, "top_k": req.top_k}).encode("utf-8")
+        req_http = urllib.request.Request(
+            f"{gw_url.rstrip('/')}/search/hybrid",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Auth-Token": tok},
+        )
+        try:
+            with urllib.request.urlopen(req_http, timeout=req.gateway_timeout) as r:
+                d = json.loads(r.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"[_run_gateway] HTTP FAILED: {type(exc).__name__}: {exc}", flush=True)
+            return []
+        results = d.get("results") or d.get("hits") or []
+        out: list[FusedHit] = []
+        for r_ in results[: req.top_k * 2]:
+            src_raw = (r_.get("source") or "").lower()
+            if "neo4j" in src_raw or "text2cypher" in src_raw or "community" in src_raw:
+                tag = "gateway_neo4j"
+                weight = 0.90
+            else:
+                tag = "gateway_qdrant"
+                weight = 0.95
+            score = r_.get("score") or r_.get("sim") or 0.0
+            out.append(
+                FusedHit(
+                    text=(r_.get("text") or r_.get("passage") or r_.get("content") or "")[:1000],
+                    score=float(score) * weight,
+                    source=str(r_.get("source") or r_.get("collection") or ""),
+                    node_id=str(r_.get("node_id") or "") or None,
+                    namespace=str(r_.get("namespace") or ""),
+                    origin=tag,
+                )
+            )
+        return out
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        fut_g = ex.submit(_run_g)
+        fut_gw = ex.submit(_run_gateway)
+        # G는 55k nodes gravity + 첫 호출 SBERT lazy-load 포함 시 ~10초 소요.
+        # Gateway 는 빠르게 응답하는 편 (1~2s) 이므로 분리된 timeout.
+        try:
+            g_hits = fut_g.result(timeout=max(req.gateway_timeout * 2, 30.0))
+        except Exception as exc:
+            print(f"[fused] G future timeout/err: {type(exc).__name__}: {exc}", flush=True)
+            g_hits = []
+        try:
+            gw_hits = fut_gw.result(timeout=req.gateway_timeout + 2.0)
+        except Exception as exc:
+            print(f"[fused] Gateway future timeout/err: {type(exc).__name__}: {exc}", flush=True)
+            gw_hits = []
+
+    merged = sorted(g_hits + gw_hits, key=lambda x: x.score, reverse=True)[: req.top_k]
+    return merged
+
+
 @app.get("/communities")
 def list_communities(project_id: str | None = None, limit: int = 50):
     """community_canonical 최근 목록."""

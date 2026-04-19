@@ -24,6 +24,10 @@ services:
       GSTAR_HOME: /app/state
       GSTAR_NAS_ROOT: /nas/workspace
       TZ: Asia/Seoul
+      # Phase D: /search/fused + /notes(mirror) 가 기존 Gateway 로 호출할 때 사용
+      GATEWAY_URL: ${GATEWAY_URL:-http://100.79.251.53:8000}
+      ASST_TOKEN: ${ASST_TOKEN:-}
+      GP_MIRROR_QDRANT: ${GP_MIRROR_QDRANT:-off}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9999/health"]
       interval: 30s
