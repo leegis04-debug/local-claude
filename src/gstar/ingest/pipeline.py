@@ -42,7 +42,14 @@ def ingest_path(
     use_morph: bool = True,
     use_typed_relations: bool = True,
     track: str = "proposal",
+    meta_index: "QdrantMetaIndex | None" = None,
 ) -> IngestReport:
+    """원문 디렉터리 → fact/entity/edge 로 분해해 G 에 저장.
+
+    `meta_index` (QdrantMetaIndex) 가 주어지면 각 fact 의 source 파일 경로로
+    lookup 해 Qdrant payload 메타(tags/date/source/project/security_level/priority
+    등)를 node.attrs 에 병합. Phase A2 의 "Qdrant metadata 주입" 경로.
+    """
     ns = namespace or store.active_namespace()
     known = {x.name for x in store.list_namespaces()}
     if ns not in known:
@@ -57,12 +64,36 @@ def ingest_path(
     fact_texts = [f.text for f in facts]
     fact_vecs = embedder.encode(fact_texts)
 
+    # Phase A2: 같은 source 파일은 한 번만 lookup → 하위 fact 전체가 공유
+    meta_cache: dict[str, dict] = {}
+
+    def _file_meta(src: str) -> dict:
+        if src in meta_cache:
+            return meta_cache[src]
+        m: dict = {}
+        if meta_index is not None:
+            try:
+                found = meta_index.lookup(src)
+                if found:
+                    # qdrant_ids 는 fact 단위엔 불필요 (파일 단위만)
+                    m = {k: v for k, v in found.items() if k != "qdrant_ids"}
+            except Exception:
+                m = {}
+        meta_cache[src] = m
+        return m
+
     fact_nodes: list[Node] = []
     for f in facts:
+        attrs: dict = {"source": f.source, "section": f.section, "line_no": f.line_no}
+        attrs.update(_file_meta(f.source))  # Qdrant meta 우선 덮어씀 X — 후행 병합이라 덮어씀 O
+        # 위에서 attrs 의 source/section/line_no 가 meta 에 의해 덮이면 안 됨 — 되돌림
+        attrs["source"] = f.source
+        attrs["section"] = f.section
+        attrs["line_no"] = f.line_no
         n = Node(
             kind="fact",
             text=f.text,
-            attrs={"source": f.source, "section": f.section, "line_no": f.line_no},
+            attrs=attrs,
             source_namespace=ns,
         )
         fact_nodes.append(n)

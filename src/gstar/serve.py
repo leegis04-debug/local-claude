@@ -519,3 +519,67 @@ def ingest_web(req: WebIngestRequest):
         )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+# -------- /ingest/nas (Phase A1+A2: NAS 원문 → G + Qdrant meta 주입) --------
+
+
+class NasIngestRequest(BaseModel):
+    path: str                           # 컨테이너 내부 경로 (예: /nas/workspace/articles)
+    namespace: str                      # 이관 ns (예: "articles", "books", ...)
+    min_entity_count: int = 2
+    track: str = "document"
+
+
+class NasIngestResponse(BaseModel):
+    namespace: str
+    files_scanned: int
+    facts: int
+    entities: int
+    edges: int
+
+
+@app.post("/ingest/nas", response_model=NasIngestResponse)
+def ingest_nas(req: NasIngestRequest):
+    """NAS 원문 디렉터리를 G 로 ingest. `GSTAR_QDRANT_META_DIR` 에 덤프가 있으면
+    path 매칭으로 attrs 에 Qdrant 메타 주입. 멱등성은 DuckStore content_hash 에 위임."""
+    from gstar.ingest.pipeline import ingest_path
+    from gstar.ingest.qdrant_meta import load_from_dir, default_index_path
+
+    s = get_state()
+    target = Path(req.path)
+    if not target.exists():
+        raise HTTPException(404, f"path not found: {target}")
+    nas_root = Path(os.environ.get("GSTAR_NAS_ROOT", "/nas/workspace"))
+    # 허용 경로: nas_root 하위 또는 staging/test 허용용 /tmp
+    try:
+        target.resolve().relative_to(nas_root.resolve())
+    except Exception:
+        if not str(target).startswith(("/tmp/", "/app/state/")):
+            raise HTTPException(400, f"path must be under {nas_root}")
+
+    meta_dir = default_index_path()
+    meta_index = load_from_dir(meta_dir) if meta_dir.exists() else None
+    try:
+        report = ingest_path(
+            target,
+            store=s.store,
+            faiss=s.faiss,
+            embedder=s.embedder,
+            root=nas_root if target.is_dir() else None,
+            min_entity_count=req.min_entity_count,
+            namespace=req.namespace,
+            track=req.track,
+            meta_index=meta_index,
+        )
+        s.faiss.save()
+    except Exception as exc:
+        raise HTTPException(500, f"ingest failed: {exc}")
+
+    return NasIngestResponse(
+        namespace=req.namespace,
+        files_scanned=report.files_scanned,
+        facts=report.facts,
+        entities=report.entities,
+        edges=report.edges,
+    )
