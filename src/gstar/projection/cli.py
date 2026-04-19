@@ -413,6 +413,58 @@ def verify_cmd(output: Path = typer.Argument(..., exists=True)) -> None:
         store.close()
 
 
+def _find_form_md(project_dir: Path) -> Path | None:
+    """00-input/BASE/ 에서 양식 markdown 탐지.
+
+    우선순위:
+      1) 00-input/BASE/template-full.md
+      2) 00-input/BASE/*.md  (가장 큰 파일)
+      3) 00-input/template-full.md
+    """
+    candidates = [
+        project_dir / "00-input" / "BASE" / "template-full.md",
+        project_dir / "00-input" / "template-full.md",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    base = project_dir / "00-input" / "BASE"
+    if base.exists() and base.is_dir():
+        mds = sorted(base.glob("*.md"), key=lambda p: p.stat().st_size, reverse=True)
+        if mds:
+            return mds[0]
+    return None
+
+
+def _should_answer_question(q, stage: str) -> bool:
+    """stage 에 맞춰 이 질문을 답변 대상으로 채택할지.
+
+    - idea: 상위 heading (depth<=3) 만 - 너무 잘게 나누면 아이디어 구상엔 과함
+    - structure: heading + table_row_label (실질 질문 전부, 답변 슬롯 제외)
+    - spec / proposal / final-doc: leaves 전부 (최대 해상도)
+    - 그 외: heading + table_row_label
+    """
+    coarse_stages = {"idea", "debate"}
+    label_stages = {"structure", "risk-check"}
+    fine_stages = {"spec", "proposal", "experiment-plan", "final-doc"}
+
+    if stage in coarse_stages:
+        return q.type == "heading" and q.depth <= 3
+    if stage in label_stages:
+        return q.type in {"heading", "table_row_label"}
+    if stage in fine_stages:
+        return q.type in {"heading", "table_row_label", "table_header"}
+    return q.type in {"heading", "table_row_label"}
+
+
+def _question_goal(q, user_input: str, stage: str) -> str:
+    """질문 + 사용자 input → Selector goal 문자열."""
+    path_hint = q.path.split(" > ")[-3:]  # 마지막 3 path 만
+    bc = " > ".join(path_hint)
+    topic = f"[{stage}] {user_input}" if user_input else f"[{stage}]"
+    return f"{topic} — 질문: {q.title} (맥락: {bc})"
+
+
 def _run_mode_e(
     *,
     track_name: str,
@@ -421,7 +473,15 @@ def _run_mode_e(
     user_input: str,
     mode: str,
 ) -> None:
-    """Phase E pipeline (sv|svr|svrr). Ollama 필요."""
+    """Phase E pipeline (sv|svr|svrr). Ollama 필요.
+
+    Phase P-Q2: 양식(template-full.md) 에서 질문 트리 추출 가능하면
+    질문별 per-question run_pipeline 반복. 없으면 legacy single-section.
+
+    env:
+      GP_FORM_QUESTIONS=off → 질문 모드 비활성 (legacy 동작)
+      GP_QUESTION_LIMIT=N   → 디버그용 처음 N개만
+    """
     from gstar.client import from_env as gclient_from_env
     from gstar.projection.pipeline_e import run_pipeline
     from gstar.projection.projector import SectionSpec
@@ -430,6 +490,78 @@ def _run_mode_e(
     store = DuckStore(paths.db)
     gclient = gclient_from_env()
 
+    out_dir = project_dir / f"_mode_{mode}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    use_questions = os.environ.get("GP_FORM_QUESTIONS", "on").lower() in {"on", "1", "true"}
+    form_md = _find_form_md(project_dir) if use_questions else None
+
+    if form_md is not None:
+        from gstar.forms.question_tree import load_questions
+        tree = load_questions(form_md)
+        candidates = [q for q in tree.nodes if _should_answer_question(q, stage)]
+        limit = int(os.environ.get("GP_QUESTION_LIMIT", "0") or "0")
+        if limit > 0:
+            candidates = candidates[:limit]
+        typer.echo(
+            f"[question-mode] form={form_md.name} "
+            f"total={len(tree)} matched={len(candidates)} stage={stage}"
+        )
+
+        all_texts: list[str] = []
+        reports: list[dict] = []
+        q_out_dir = out_dir / "q"
+        q_out_dir.mkdir(parents=True, exist_ok=True)
+
+        import json as _json
+        for i, q in enumerate(candidates, start=1):
+            goal = _question_goal(q, user_input, stage)
+            section = SectionSpec(
+                name=f"{stage}::{q.id}",
+                instruction=q.title + (f"\n경로: {q.path}" if q.path else ""),
+                target_tokens=400,
+            )
+            try:
+                rep = run_pipeline(
+                    goal=goal,
+                    track=track_name,
+                    section=section,
+                    gclient=gclient,
+                    store=store,
+                    mode=mode,
+                )
+            except Exception as exc:
+                typer.echo(f"  [{i}/{len(candidates)}] {q.id} 실패: {type(exc).__name__}: {exc}")
+                continue
+
+            text = rep.projector.text if rep.projector else ""
+            (q_out_dir / f"{q.id}.md").write_text(
+                f"# {q.title}\n\n_path_: {q.path}\n_type_: {q.type}\n\n{text}\n",
+                encoding="utf-8",
+            )
+            if text:
+                all_texts.append(f"## {q.title}\n\n{text}\n")
+            reports.append({
+                "q_id": q.id, "q_title": q.title, "q_type": q.type,
+                "ok": bool(text and rep.projector),
+                "warnings": rep.warnings,
+            })
+
+            if i % 10 == 0:
+                typer.echo(f"  [{i}/{len(candidates)}] 진행 중...")
+
+        out_path = out_dir / f"{stage}.md"
+        out_path.write_text("\n".join(all_texts), encoding="utf-8")
+        typer.echo(f"stage 합본 저장: {out_path} ({len(all_texts)} 질문 답변)")
+        report_path = out_dir / f"{stage}.report.json"
+        report_path.write_text(
+            _json.dumps({"stage": stage, "questions": reports}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        typer.echo(f"report: {report_path}")
+        return
+
+    # Legacy 단일 섹션 경로 (양식 없거나 비활성)
     section = SectionSpec(
         name=stage,
         instruction=user_input or f"{stage} 단계 섹션 작성",
@@ -446,8 +578,6 @@ def _run_mode_e(
         mode=mode,
     )
 
-    out_dir = project_dir / f"_mode_{mode}"
-    out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{stage}.md"
     if rep.projector is not None:
         out_path.write_text(rep.projector.text, encoding="utf-8")
