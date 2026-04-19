@@ -18,6 +18,7 @@ from gstar.schema import Cluster, Edge, EmergenceEvent, Goal, Namespace, Node
 
 _MIGRATIONS = Path(__file__).parent / "migrations.sql"
 _MIGRATIONS_V4 = Path(__file__).parent / "migrations_v4.sql"
+_MIGRATIONS_V5 = Path(__file__).parent / "migrations_v5.sql"
 
 
 def _to_utc_naive(ts: datetime) -> datetime:
@@ -59,6 +60,8 @@ class DuckStore:
         self.conn.execute(ddl)
         if _MIGRATIONS_V4.exists():
             self.conn.execute(_MIGRATIONS_V4.read_text(encoding="utf-8"))
+        if _MIGRATIONS_V5.exists():
+            self.conn.execute(_MIGRATIONS_V5.read_text(encoding="utf-8"))
 
     def close(self) -> None:
         self.conn.close()
