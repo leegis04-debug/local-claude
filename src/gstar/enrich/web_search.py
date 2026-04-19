@@ -12,12 +12,25 @@ async def web_search(
     *,
     backend: str = "ddg",
     top_k: int = 3,
+    track_quota: bool = True,
 ) -> list[dict[str, Any]]:
     """쿼리 → [{"title", "url", "snippet", "content"}, ...]
 
     기본 백엔드 `ddg` — DuckDuckGo 무료·무키. API 키 불필요.
+    `track_quota=True` (기본) 면 호출 성공 시 quota 기록.
+    `backend="auto"` 면 QuotaManager 가 무료 한도 남은 백엔드 자동 선택.
     """
     backend = (backend or "ddg").lower()
+
+    if backend == "auto":
+        from gstar.enrich.quota import QuotaManager
+
+        qm = QuotaManager()
+        preferred = os.environ.get("GP_ENRICH_PREFERRED", "tavily,brave,exa,searchapi,you,ddg").split(",")
+        picked = qm.pick_backend([b.strip() for b in preferred])
+        if not picked:
+            return []
+        backend = picked
     if backend == "mock":
         return _mock_results(query, top_k)
     if backend == "ddg" or backend == "duckduckgo":
@@ -30,6 +43,14 @@ async def web_search(
         return await _firecrawl_search(query, top_k)
     if backend == "tavily":
         return await _tavily_search(query, top_k)
+    if backend == "exa":
+        return await _exa_search(query, top_k)
+    if backend == "searchapi":
+        return await _searchapi_search(query, top_k)
+    if backend == "perplexity":
+        return await _perplexity_search(query, top_k)
+    if backend == "you" or backend == "you.com":
+        return await _you_search(query, top_k)
     if backend == "self_made" or backend == "self":
         from gstar.enrich.self_made import self_made_search
 
@@ -245,6 +266,150 @@ async def _serpapi_search(query: str, top_k: int) -> list[dict[str, Any]]:
             }
             for r in organic
         ]
+
+
+async def _exa_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """Exa (구 Metaphor) — AI 검색, 월 1,000 요청 무료. EXA_API_KEY."""
+    import httpx
+
+    key = os.environ.get("EXA_API_KEY")
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                "https://api.exa.ai/search",
+                headers={"x-api-key": key, "Content-Type": "application/json"},
+                json={
+                    "query": query,
+                    "numResults": top_k,
+                    "contents": {"text": True, "highlights": True},
+                    "type": "neural",
+                },
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    out = []
+    for item in (data.get("results") or [])[:top_k]:
+        text = item.get("text") or ""
+        if not text:
+            h = item.get("highlights") or []
+            text = " ".join(h) if h else item.get("snippet", "")
+        out.append({
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "snippet": text[:400],
+            "content": text[:8000],
+        })
+    return out
+
+
+async def _searchapi_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """SearchApi.io — Google 결과. 월 100 req 무료. SEARCHAPI_KEY."""
+    import httpx
+
+    key = os.environ.get("SEARCHAPI_KEY")
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                "https://www.searchapi.io/api/v1/search",
+                params={
+                    "engine": "google",
+                    "q": query,
+                    "num": top_k,
+                    "hl": "ko",
+                    "gl": "kr",
+                    "api_key": key,
+                },
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    organic = (data.get("organic_results") or [])[:top_k]
+    return [
+        {
+            "title": r.get("title", ""),
+            "url": r.get("link", ""),
+            "snippet": r.get("snippet", ""),
+            "content": r.get("snippet", ""),
+        }
+        for r in organic
+    ]
+
+
+async def _perplexity_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """Perplexity — AI answer + 출처. PERPLEXITY_API_KEY. 유료($5 free credit)."""
+    import httpx
+
+    key = os.environ.get("PERPLEXITY_API_KEY")
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": "sonar-small-online",
+                    "messages": [{"role": "user", "content": query}],
+                    "return_citations": True,
+                },
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    answer = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    citations = data.get("citations") or []
+    out: list[dict[str, Any]] = []
+    if answer and citations:
+        for i, url in enumerate(citations[:top_k]):
+            out.append({
+                "title": f"Perplexity citation #{i+1}",
+                "url": url,
+                "snippet": answer[:400],
+                "content": answer[:4000],
+            })
+    return out
+
+
+async def _you_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """You.com — 무료 티어 제공, YOU_API_KEY."""
+    import httpx
+
+    key = os.environ.get("YOU_API_KEY")
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                "https://api.ydc-index.io/search",
+                headers={"X-API-Key": key},
+                params={"query": query, "num_web_results": top_k},
+            )
+            if r.status_code != 200:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    hits = data.get("hits") or []
+    return [
+        {
+            "title": h.get("title", ""),
+            "url": h.get("url", ""),
+            "snippet": (h.get("description") or " ".join(h.get("snippets") or []))[:400],
+            "content": " ".join(h.get("snippets") or [])[:4000],
+        }
+        for h in hits[:top_k]
+    ]
 
 
 async def _tavily_search(query: str, top_k: int) -> list[dict[str, Any]]:
