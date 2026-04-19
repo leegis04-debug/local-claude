@@ -106,6 +106,33 @@ def _is_answer_slot(cell: str) -> bool:
     return False
 
 
+# 답변 대상에서 제외할 heading · row 패턴 (boilerplate / 서명 / 파일 메타 등)
+_BOILERPLATE_PATTERNS = (
+    re.compile(r"^HWPX 분석"),
+    re.compile(r"^문서 메타정보"),
+    re.compile(r"^Section \d+"),
+    re.compile(r"^표\s*\d+\s*:\s*\[별지"),
+    re.compile(r"^표\s*\d+\s*:\s*본인"),                # "본인(주관기업)은..."
+    re.compile(r"동의합니다"),
+    re.compile(r"서\s*명|날\s*인|\(인\)|\(서명\)"),
+    re.compile(r"^---+$"),
+    re.compile(r"^\s*[↳▷▶•·\-]+\s*$"),                 # bullet-only
+)
+
+
+def is_boilerplate(title: str) -> bool:
+    """질문으로 삼지 말아야 할 boilerplate 문구 판정."""
+    t = title.strip()
+    if not t:
+        return True
+    if len(t) < 2:                                       # "1", "↳" 등 단일 문자
+        return True
+    for pat in _BOILERPLATE_PATTERNS:
+        if pat.search(t):
+            return True
+    return False
+
+
 def _parse_table_row(line: str) -> list[str] | None:
     m = _TABLE_ROW_RE.match(line)
     if not m:

@@ -5,8 +5,42 @@ from __future__ import annotations
 from gstar.forms.question_tree import (
     QuestionNode,
     QuestionTree,
+    is_boilerplate,
     parse_questions_from_md,
 )
+
+
+def test_is_boilerplate_skips_meta_and_signature():
+    skip = [
+        "HWPX 분석: [양식] 농식품...",
+        "문서 메타정보",
+        "Section 0",
+        "Section 12",
+        "표 4: 본인(주관기업)은 위 사항을 정확히 확인하였으며 사실과 다름없음에 동의합니다.",
+        "표 5: [별지 제2-1호] 사업신청서(종합)",
+        "표 7: [별지 제2-2호] 사업신청서(중소기업 단독 또는 주관기업)",
+        "↳",
+        "1",
+        "---",
+        "(서명)",
+        "(인)",
+    ]
+    for t in skip:
+        assert is_boilerplate(t), f"예상: boilerplate / 실제: not / title={t!r}"
+
+
+def test_is_boilerplate_keeps_real_questions():
+    keep = [
+        "표 8: 1. 기업정보",
+        "1. 상용화 대상 개요",
+        "2. 상용화 대상 시장",
+        "핵심 AI 기술",
+        "상용화대상 명칭",
+        "신청(지원) 유형",
+        "기술수준",
+    ]
+    for t in keep:
+        assert not is_boilerplate(t), f"예상: keep / 실제: boilerplate / title={t!r}"
 
 
 def test_simple_headings_only():

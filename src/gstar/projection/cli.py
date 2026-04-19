@@ -467,7 +467,13 @@ def _should_answer_question(q, stage: str) -> bool:
     - structure: heading + table_row_label (실질 질문 전부, 답변 슬롯 제외)
     - spec / proposal / final-doc: leaves 전부 (최대 해상도)
     - 그 외: heading + table_row_label
+
+    boilerplate (서명문·[별지]·Section N·HWPX 메타 등) 은 stage 무관 제외.
     """
+    from gstar.forms.question_tree import is_boilerplate
+    if is_boilerplate(q.title):
+        return False
+
     coarse_stages = {"idea", "debate"}
     label_stages = {"structure", "risk-check"}
     fine_stages = {"spec", "proposal", "experiment-plan", "final-doc"}
@@ -560,21 +566,41 @@ def _run_mode_e(
                 typer.echo(f"  [{i}/{len(candidates)}] {q.id} 실패: {type(exc).__name__}: {exc}")
                 continue
 
-            text = rep.projector.text if rep.projector else ""
-            (q_out_dir / f"{q.id}.md").write_text(
-                f"# {q.title}\n\n_path_: {q.path}\n_type_: {q.type}\n\n{text}\n",
-                encoding="utf-8",
-            )
-            if text:
+            text = (rep.projector.text if rep.projector else "").strip()
+            has_answer = bool(text) and "(Projector 호출 실패" not in text
+            if has_answer:
+                (q_out_dir / f"{q.id}.md").write_text(
+                    f"# {q.title}\n\n_path_: {q.path}\n_type_: {q.type}\n\n{text}\n",
+                    encoding="utf-8",
+                )
                 all_texts.append(f"## {q.title}\n\n{text}\n")
+            else:
+                # 빈 답변이면 파일 생성 금지 — warnings 만 기록
+                typer.echo(
+                    f"  [{i}/{len(candidates)}] {q.id} skip (fact 없음/Projector 실패)"
+                )
+
             reports.append({
                 "q_id": q.id, "q_title": q.title, "q_type": q.type,
-                "ok": bool(text and rep.projector),
+                "ok": has_answer,
                 "warnings": rep.warnings,
             })
 
+            # incremental report — 중간 crash 시에도 진행 상황 확인 가능
+            try:
+                (out_dir / "report.json").write_text(
+                    _json.dumps(
+                        {"stage": stage, "in_progress": True, "done": i,
+                         "total": len(candidates), "questions": reports},
+                        ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
             if i % 10 == 0:
-                typer.echo(f"  [{i}/{len(candidates)}] 진행 중...")
+                ok_cnt = sum(1 for r in reports if r["ok"])
+                typer.echo(f"  [{i}/{len(candidates)}] ok={ok_cnt} skip={i-ok_cnt}")
 
         # 기존 stage.md 있으면 _versions/ 로 백업 후 덮어쓰기
         main_path = stage_dir / f"{stage}.md"
@@ -586,10 +612,19 @@ def _run_mode_e(
             ver_path.write_text(main_path.read_text(encoding="utf-8"), encoding="utf-8")
             typer.echo(f"기존 {main_path.name} → {ver_path.relative_to(stage_dir)} 백업")
         main_path.write_text("\n".join(all_texts), encoding="utf-8")
-        typer.echo(f"stage 합본 저장: {main_path} ({len(all_texts)} 질문 답변)")
+        ok_cnt = sum(1 for r in reports if r["ok"])
+        skip_cnt = len(reports) - ok_cnt
+        typer.echo(
+            f"stage 합본 저장: {main_path} (ok={ok_cnt} skip={skip_cnt} total={len(reports)})"
+        )
         report_path = out_dir / "report.json"
         report_path.write_text(
-            _json.dumps({"stage": stage, "questions": reports}, ensure_ascii=False, indent=2),
+            _json.dumps({
+                "stage": stage,
+                "in_progress": False,
+                "summary": {"total": len(reports), "ok": ok_cnt, "skip": skip_cnt},
+                "questions": reports,
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         typer.echo(f"report: {report_path}")

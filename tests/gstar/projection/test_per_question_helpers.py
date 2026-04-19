@@ -16,7 +16,7 @@ from gstar.projection.cli import (
 )
 
 
-def _mk_q(type_: str, depth: int = 0, title: str = "q", path: str = "root > q") -> QuestionNode:
+def _mk_q(type_: str, depth: int = 0, title: str = "실제 질문 제목", path: str = "root > q") -> QuestionNode:
     return QuestionNode(
         id="q_0001_abc",
         seq=1,
