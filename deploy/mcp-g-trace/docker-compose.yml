@@ -1,0 +1,27 @@
+# Phase G1 — MCP 서버 `assistant-mcp-g-trace`.
+#
+# Claude Code 가 tool_use 로 자발적 trace 기록. 내부에서 g-serve /trace/record 로 위임.
+# 기존 /opt/assistant/mcp/mcp-jw-validator / mcp-doc-thinking 패턴과 동일.
+#
+# 미니 PC 에서:
+#   cd /opt/assistant/mcp/mcp-g-trace   # 또는 ~/local-claude/deploy/mcp-g-trace
+#   docker compose up -d
+
+services:
+  mcp-g-trace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcp-g-trace:latest
+    container_name: assistant-mcp-g-trace
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MCP_PORT: ${MCP_PORT:-8767}
+      G_SERVER_URL: ${G_SERVER_URL:-http://100.79.251.53:9999}
+      TZ: Asia/Seoul
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${MCP_PORT:-8767}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

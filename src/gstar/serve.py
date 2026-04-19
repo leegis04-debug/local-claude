@@ -724,6 +724,8 @@ def worker_tick(req: TickRequest):
             min_community_size=req.min_community_size,
             project_ids=req.project_ids,
             mode=req.mode,
+            embedder=s.embedder,
+            faiss=s.faiss,
         )
     except Exception as exc:
         raise HTTPException(500, f"tick failed: {exc}")
@@ -1131,18 +1133,94 @@ def trace_session(task_id: str):
 def trace_patterns(goal_like: str = "", top_k: int = 5):
     """유사 goal 의 절차(procedure) 패턴 반환 — Selector retrieval 용.
 
-    procedure 노드가 아직 없을 수도 있어 trace 노드 중 phase=decision|step 을 fallback.
-    Selector 가 system prompt 삽입용으로 호출.
+    우선순위:
+      1. kind='procedure' 노드 (worker G6 miner 가 생성) 중 text SBERT 유사도 top
+      2. fallback: claude_trace 에서 description LIKE goal_like 매칭 (단어 기반)
     """
+    import re as _re
+
     s = get_state()
     if not goal_like.strip():
         return []
+
+    out: list[dict] = []
+
+    # 1) 우선: procedure 노드 SBERT 검색
     try:
         vec = s.embedder.encode([goal_like])[0]
-    except Exception as exc:
-        raise HTTPException(503, f"embedder unavailable: {exc}")
-    hits = s.faiss.search(vec, k=top_k * 4)
-    out: list[dict] = []
+        hits = s.faiss.search(vec, k=top_k * 6)
+    except Exception:
+        hits = []
+
+    with s.store.lock:
+        for nid, score in hits:
+            if len(out) >= top_k:
+                break
+            try:
+                row = s.store.conn.execute(
+                    "SELECT id, kind, text, attrs_json FROM node WHERE id=? AND kind='procedure'",
+                    [nid],
+                ).fetchone()
+            except Exception:
+                continue
+            if not row:
+                continue
+            try:
+                attrs = json.loads(row[3]) if row[3] else {}
+            except Exception:
+                attrs = {}
+            out.append(
+                {
+                    "node_id": row[0],
+                    "kind": row[1],
+                    "text": row[2],
+                    "score": float(score),
+                    "phase": attrs.get("phase") or "procedure",
+                    "task_id": attrs.get("task_id"),
+                }
+            )
+
+    # 2) Fallback: claude_trace LIKE 검색 (procedure 아직 없을 때)
+    if len(out) < top_k:
+        tokens = [t for t in _re.findall(r"\w+", goal_like, flags=_re.UNICODE) if len(t) >= 2]
+        needed = top_k - len(out)
+        seen_ids = {x["node_id"] for x in out}
+        with s.store.lock:
+            for tok in tokens[:3]:
+                if needed <= 0:
+                    break
+                try:
+                    rows = s.store.conn.execute(
+                        "SELECT id, task_id, bracket_phase, description, created_at "
+                        "FROM claude_trace WHERE description LIKE ? "
+                        "ORDER BY created_at DESC LIMIT ?",
+                        [f"%{tok}%", needed * 2],
+                    ).fetchall()
+                except Exception:
+                    continue
+                for r in rows:
+                    if r[0] in seen_ids:
+                        continue
+                    out.append(
+                        {
+                            "node_id": r[0],
+                            "kind": "event",
+                            "text": r[3],
+                            "score": 0.5,          # LIKE 매칭의 기본 점수
+                            "phase": r[2],
+                            "task_id": r[1],
+                        }
+                    )
+                    seen_ids.add(r[0])
+                    needed -= 1
+                    if needed <= 0:
+                        break
+
+    if out:
+        return out[:top_k]
+
+    # 3) 최후 fallback (vector hit 만 있을 때)
+    out2: list[dict] = []
     with s.store.lock:
         for nid, score in hits:
             try:
@@ -1159,7 +1237,7 @@ def trace_patterns(goal_like: str = "", top_k: int = 5):
                 attrs = json.loads(row[3]) if row[3] else {}
             except Exception:
                 attrs = {}
-            out.append(
+            out2.append(
                 {
                     "node_id": row[0],
                     "kind": row[1],
@@ -1169,9 +1247,9 @@ def trace_patterns(goal_like: str = "", top_k: int = 5):
                     "task_id": attrs.get("task_id"),
                 }
             )
-            if len(out) >= top_k:
+            if len(out2) >= top_k:
                 break
-    return out
+    return out2
 
 
 def _safe_json_loads(s: str | None) -> dict | list | None:

@@ -22,7 +22,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-NodeKind = Literal["fact", "entity", "relation", "event", "state", "evidence"]
+NodeKind = Literal[
+    "fact", "entity", "relation", "event", "state", "evidence",
+    # Phase G6 — worker procedure miner 가 생성하는 절차 패턴 노드
+    "procedure",
+]
 GoalKind = Literal["proposal", "code", "research"]
 
 DEFAULT_NAMESPACE = "personal"

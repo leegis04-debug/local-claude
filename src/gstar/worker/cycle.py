@@ -109,6 +109,9 @@ def run_cycle(
     project_ids: list[str] | None = None,
     skip_if_paused: bool = True,
     mode: str = "per_project",
+    mine_traces: bool = True,
+    embedder=None,
+    faiss=None,
 ) -> TickReport:
     """Worker 한 주기 실행.
 
@@ -160,6 +163,21 @@ def run_cycle(
             "projects": len(community_summaries),
             "details": community_summaries,
         }
+
+        # Phase G6 — trace → procedure 패턴 추출
+        if mine_traces:
+            try:
+                from gstar.worker.procedures import mine_procedures
+                mres = mine_procedures(store, embedder=embedder, faiss=faiss)
+                rep.steps["procedures"] = {
+                    "tasks_scanned": mres.tasks_scanned,
+                    "created": mres.procedures_created,
+                    "skipped_existing": mres.procedures_skipped_existing,
+                    "errors": mres.errors,
+                }
+            except Exception as exc:
+                rep.steps["procedures"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         rep.status = "success"
     except Exception as exc:
         rep.status = "failed"
