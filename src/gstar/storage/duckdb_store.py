@@ -77,12 +77,24 @@ class DuckStore:
     )
 
     def insert_node(self, node: Node) -> None:
-        """Integrity Layer: content_hash/prev_hash 자동 계산 후 저장."""
+        """Integrity Layer: content_hash/prev_hash 자동 계산 후 저장.
+
+        중복 방지: 같은 `(source_namespace, content_hash)` 노드가 이미 있으면 skip
+        하고 기존 node.id 를 입력 `node` 에 반영 (dedupe)."""
 
         # content_hash 비어있으면 계산
         if not node.content_hash:
             node.content_hash = compute_content_hash(node)
         with self.lock:
+            # 중복 검사 (같은 ns + content_hash 이미 있으면 기존 id 재사용)
+            existing = self.conn.execute(
+                "SELECT id FROM node WHERE source_namespace = ? AND content_hash = ? LIMIT 1",
+                [node.source_namespace, node.content_hash],
+            ).fetchone()
+            if existing:
+                node.id = existing[0]
+                return
+
             # prev_hash 미지정이면 동일 namespace 의 직전 노드에서 링크
             if node.prev_hash is None:
                 prev_row = self.conn.execute(

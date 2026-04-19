@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# g-session-push — Phase G3 Stop hook.
+#
+# Claude Code Stop event 에서 실행. 세션 transcript 을 요약해 G /trace/record 로 push.
+# env:
+#   CLAUDE_TRANSCRIPT_PATH (optional) — Claude Code 가 세션 종료 시 설정
+#   GP_SERVER_URL          (default: http://100.79.251.53:9999)
+#   G_TRACE_ENABLED        (default: on) — off 면 아무것도 안 함
+#   G_SESSION_PUSH_MAX_BYTES (default: 8192) — 전체 transcript 중 전송할 요약 최대 크기
+#
+# 실패는 silent (Stop hook 이 Claude 종료를 막으면 안 됨).
+
+set -u
+
+if [ "${G_TRACE_ENABLED:-on}" = "off" ]; then
+  exit 0
+fi
+
+G_URL="${GP_SERVER_URL:-http://100.79.251.53:9999}"
+MAX="${G_SESSION_PUSH_MAX_BYTES:-8192}"
+TRANSCRIPT="${CLAUDE_TRANSCRIPT_PATH:-}"
+
+# transcript 이 없으면 stdin 사용 (Claude Code 가 hook 에 전달 가능)
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  SUMMARY=$(tail -c "$MAX" "$TRANSCRIPT" 2>/dev/null || true)
+else
+  # stdin 에서 전부 읽기. EOF 면 즉시 종료. (timeout 은 subshell stdin 을 가로챔)
+  if [ -t 0 ]; then
+    SUMMARY=""   # tty 에서 실행되면 stdin 없음
+  else
+    SUMMARY=$(cat 2>/dev/null | tail -c "$MAX" || true)
+  fi
+fi
+
+# 빈 내용이면 종료
+[ -z "$SUMMARY" ] && exit 0
+
+TASK_ID="session-$(date +%Y%m%d_%H%M%S)-$$"
+DESCRIPTION="[session] $(echo "$SUMMARY" | head -c 200 | tr '\n' ' ')"
+
+# JSON escape — python3 one-liner 사용
+BODY=$(python3 - "$TASK_ID" "$DESCRIPTION" "$SUMMARY" <<'PY' 2>/dev/null
+import json, sys
+tid, desc, body = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({
+    "source": "hook",
+    "phase": "session",
+    "task_id": tid,
+    "description": desc,
+    "extras": {"transcript_tail_len": len(body), "transcript_tail": body[-4096:]},
+}, ensure_ascii=False))
+PY
+)
+
+[ -z "$BODY" ] && exit 0
+
+curl -sf -m 3 -X POST "$G_URL/trace/record" \
+  -H "Content-Type: application/json" \
+  -d "$BODY" >/dev/null 2>&1 || true
+
+exit 0
