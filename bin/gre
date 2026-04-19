@@ -30,15 +30,20 @@ while (( $# > 0 )); do
     --form=*)      form="${1#--form=}"; shift ;;
     --panel)       panel="on"; shift ;;
     --no-panel)    panel="off"; shift ;;
+    --limit)       limit="$2"; shift 2 ;;
+    --limit=*)     limit="${1#--limit=}"; shift ;;
+    --no-form)     no_form="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gre — research 트랙 (idea|structure|spec|experiment-plan|proposal|final-doc|lab-note|...)
 사용: gre <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                            [--coherence strict|loose|off] [--model <ollama>]
                            [--form <form-id>] [--panel | --no-panel]
+                           [--limit N] [--no-form]
 
-  --panel      stage 별 4~5 persona 패널 활성. svrr 모드에선 draft→L1→integrator 합성.
-  --no-panel   GP_PERSONAS=off 강제
+  --panel      persona 패널 활성. svrr 에서 draft→L1→integrator.
+  --limit N    per-question 모드에서 처음 N개만 (빠른 확인·timeout 회피)
+  --no-form    양식 질문 트리 비활성 (단일 섹션 모드)
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
@@ -50,6 +55,8 @@ if [ "$panel" = "on" ]; then
 elif [ "$panel" = "off" ]; then
   export GP_PERSONAS=off
 fi
+if [ -n "${limit:-}" ]; then export GP_QUESTION_LIMIT="$limit"; fi
+if [ "${no_form:-}" = "on" ]; then export GP_FORM_QUESTIONS=off; fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gre <stage> ..." >&2; exit 1; }

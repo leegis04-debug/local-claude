@@ -30,14 +30,19 @@ while (( $# > 0 )); do
     --form=*)      form="${1#--form=}"; shift ;;
     --panel)       panel="on"; shift ;;
     --no-panel)    panel="off"; shift ;;
+    --limit)       limit="$2"; shift 2 ;;
+    --limit=*)     limit="${1#--limit=}"; shift ;;
+    --no-form)     no_form="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gdoc — 범용 문서 트랙 (outline|draft|revise|finalize)
 사용: gdoc <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                               [--coherence strict|loose|off] [--model <ollama>]
-                              [--panel | --no-panel]
+                              [--panel | --no-panel] [--limit N] [--no-form]
 
-  --panel      persona 패널 활성 (stage 별 기본 정의가 있는 경우에만 의미)
+  --panel      persona 패널 활성
+  --limit N    per-question 처음 N개만
+  --no-form    양식 질문 트리 비활성
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
@@ -49,6 +54,8 @@ if [ "$panel" = "on" ]; then
 elif [ "$panel" = "off" ]; then
   export GP_PERSONAS=off
 fi
+if [ -n "${limit:-}" ]; then export GP_QUESTION_LIMIT="$limit"; fi
+if [ "${no_form:-}" = "on" ]; then export GP_FORM_QUESTIONS=off; fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gdoc <stage> ..." >&2; exit 1; }

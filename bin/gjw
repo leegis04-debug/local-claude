@@ -31,28 +31,49 @@ while (( $# > 0 )); do
     --form=*)      form="${1#--form=}"; shift ;;
     --panel)       panel="on"; shift ;;
     --no-panel)    panel="off"; shift ;;
+    --limit)       limit="$2"; shift 2 ;;
+    --limit=*)     limit="${1#--limit=}"; shift ;;
+    --no-form)     no_form="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gjw — proposal 트랙 (idea|debate|structure|spec|risk-check|experiment-plan|proposal|final-doc)
 사용: gjw <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                            [--coherence strict|loose|off] [--model <ollama>]
                            [--form <form-id>] [--panel | --no-panel]
+                           [--limit N] [--no-form]
 
-  --panel      stage 별 4~5 persona 패널 활성 (analyst/strategist/architect/critic/writer)
-               GP_PERSONAS=on 효과. svrr 모드에서는 persona 드래프트 → Verifier L1
-               필터 → integrator 가 합성. 섹션당 호출 수 3~5배 증가.
-  --no-panel   GP_PERSONAS=off 강제 (기본)
+  --panel      stage 별 4~5 persona 패널 활성. svrr 에서 draft→L1→integrator.
+               섹션당 Ollama 호출 수 3~5배.
+  --no-panel   GP_PERSONAS=off 강제
+  --limit N    per-question 모드에서 처음 N개 질문만 (빠른 반복·디버그·Claude Code timeout 회피)
+  --no-form    양식 질문 트리 사용 중지 — legacy 단일 섹션 모드 (GP_FORM_QUESTIONS=off)
+
+예시:
+  gjw idea "토픽" --mode svrr                      # 양식 기반 질문 전부 (수십분)
+  gjw idea "토픽" --mode svrr --limit 5            # 앞 5개만 (빠른 확인)
+  gjw idea "토픽" --mode svrr --panel --limit 3   # 패널 + 3 질문
+  gjw idea "토픽" --mode svrr --no-form            # 양식 무시, 단일 섹션
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
   esac
 done
 
-# --panel / --no-panel → GP_PERSONAS env 로 명확히 주입
+# --panel / --no-panel → GP_PERSONAS env 주입
 if [ "$panel" = "on" ]; then
   export GP_PERSONAS=on
 elif [ "$panel" = "off" ]; then
   export GP_PERSONAS=off
+fi
+
+# --limit N → GP_QUESTION_LIMIT
+if [ -n "${limit:-}" ]; then
+  export GP_QUESTION_LIMIT="$limit"
+fi
+
+# --no-form → GP_FORM_QUESTIONS=off
+if [ "${no_form:-}" = "on" ]; then
+  export GP_FORM_QUESTIONS=off
 fi
 
 stage="${args[0]:-}"
