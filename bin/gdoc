@@ -14,6 +14,7 @@ mode=""
 coherence=""
 model=""
 form=""
+panel=""
 args=()
 while (( $# > 0 )); do
   case "$1" in
@@ -27,16 +28,27 @@ while (( $# > 0 )); do
     --model=*)     model="${1#--model=}"; shift ;;
     --form)        form="$2"; shift 2 ;;
     --form=*)      form="${1#--form=}"; shift ;;
+    --panel)       panel="on"; shift ;;
+    --no-panel)    panel="off"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gdoc — 범용 문서 트랙 (outline|draft|revise|finalize)
 사용: gdoc <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                               [--coherence strict|loose|off] [--model <ollama>]
+                              [--panel | --no-panel]
+
+  --panel      persona 패널 활성 (stage 별 기본 정의가 있는 경우에만 의미)
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
   esac
 done
+
+if [ "$panel" = "on" ]; then
+  export GP_PERSONAS=on
+elif [ "$panel" = "off" ]; then
+  export GP_PERSONAS=off
+fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gdoc <stage> ..." >&2; exit 1; }

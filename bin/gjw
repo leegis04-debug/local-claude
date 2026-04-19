@@ -15,6 +15,7 @@ mode=""
 coherence=""
 model=""
 form=""
+panel=""          # "on" | "off" | ""(기본, env 따름)
 args=()
 while (( $# > 0 )); do
   case "$1" in
@@ -28,17 +29,31 @@ while (( $# > 0 )); do
     --model=*)     model="${1#--model=}"; shift ;;
     --form)        form="$2"; shift 2 ;;
     --form=*)      form="${1#--form=}"; shift ;;
+    --panel)       panel="on"; shift ;;
+    --no-panel)    panel="off"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gjw — proposal 트랙 (idea|debate|structure|spec|risk-check|experiment-plan|proposal|final-doc)
 사용: gjw <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                            [--coherence strict|loose|off] [--model <ollama>]
-                           [--form <form-id>]
+                           [--form <form-id>] [--panel | --no-panel]
+
+  --panel      stage 별 4~5 persona 패널 활성 (analyst/strategist/architect/critic/writer)
+               GP_PERSONAS=on 효과. svrr 모드에서는 persona 드래프트 → Verifier L1
+               필터 → integrator 가 합성. 섹션당 호출 수 3~5배 증가.
+  --no-panel   GP_PERSONAS=off 강제 (기본)
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
   esac
 done
+
+# --panel / --no-panel → GP_PERSONAS env 로 명확히 주입
+if [ "$panel" = "on" ]; then
+  export GP_PERSONAS=on
+elif [ "$panel" = "off" ]; then
+  export GP_PERSONAS=off
+fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gjw <stage> ..." >&2; exit 1; }
