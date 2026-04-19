@@ -67,10 +67,23 @@ class BenchSummary:
     unique_url_ratio: float
     avg_snippet_len: float
     korean_ratio: float
-    claude_overlap: float | None = None
+    claude_overlap: float | None = None        # exact URL 매칭 (과대엄격)
+    claude_domain_overlap: float | None = None  # 도메인 레벨 매칭 (실질 지표)
 
 
 _HANGUL = re.compile(r"[\uac00-\ud7a3]")
+
+
+def _domain_of(url: str) -> str:
+    """URL → 정규화된 호스트 (www. 제거, 소문자). 실패 시 빈 문자열."""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
 
 
 def _korean_ratio(texts: list[str]) -> float:
@@ -136,11 +149,18 @@ async def run_benchmark(
             mean_korean = statistics.mean([r.korean_ratio for r in runs]) if runs else 0.0
 
             overlap: float | None = None
+            dom_overlap: float | None = None
             if claude_ref and q in claude_ref:
                 ref_urls = {x.get("url", "") for x in claude_ref[q]}
                 ours = set(all_urls)
                 if ref_urls:
                     overlap = len(ours & ref_urls) / len(ref_urls)
+                ref_doms = {_domain_of(u) for u in ref_urls}
+                ref_doms.discard("")
+                ours_doms = {_domain_of(u) for u in ours}
+                ours_doms.discard("")
+                if ref_doms:
+                    dom_overlap = len(ours_doms & ref_doms) / len(ref_doms)
 
             summaries.append(
                 BenchSummary(
@@ -154,6 +174,7 @@ async def run_benchmark(
                     avg_snippet_len=round(mean_snippet, 1),
                     korean_ratio=round(mean_korean, 3),
                     claude_overlap=overlap,
+                    claude_domain_overlap=dom_overlap,
                 )
             )
     return raw, summaries
@@ -167,8 +188,8 @@ def render_markdown_report(summaries: list[BenchSummary]) -> str:
     lines = ["# 웹 검색 백엔드 벤치마크", ""]
     lines.append("## 백엔드별 요약 (쿼리 평균)")
     lines.append("")
-    lines.append("| backend | 평균 hits | 평균 latency(ms) | unique URL | avg snippet | 한국어비율 | Claude overlap |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| backend | 평균 hits | 평균 latency(ms) | unique URL | avg snippet | 한국어비율 | domain overlap | exact overlap |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for backend, items in by_backend.items():
         mean_hits = statistics.mean([s.mean_hits for s in items])
         mean_lat = statistics.mean([s.mean_latency_ms for s in items])
@@ -177,22 +198,26 @@ def render_markdown_report(summaries: list[BenchSummary]) -> str:
         mean_kor = statistics.mean([s.korean_ratio for s in items])
         overlaps = [s.claude_overlap for s in items if s.claude_overlap is not None]
         mean_overlap = statistics.mean(overlaps) if overlaps else None
+        dom_overlaps = [s.claude_domain_overlap for s in items if s.claude_domain_overlap is not None]
+        mean_dom = statistics.mean(dom_overlaps) if dom_overlaps else None
         overlap_str = f"{mean_overlap:.2f}" if mean_overlap is not None else "—"
+        dom_str = f"{mean_dom:.2f}" if mean_dom is not None else "—"
         lines.append(
             f"| {backend} | {mean_hits:.1f} | {int(mean_lat)} | {mean_uniq:.2f} | "
-            f"{mean_snip:.0f} | {mean_kor:.2f} | {overlap_str} |"
+            f"{mean_snip:.0f} | {mean_kor:.2f} | {dom_str} | {overlap_str} |"
         )
     lines.append("")
     lines.append("## 쿼리 × 백엔드 상세")
     lines.append("")
-    lines.append("| 쿼리 | backend | iters | hits | σhits | latency | 한국어 | overlap |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| 쿼리 | backend | iters | hits | σhits | latency | 한국어 | domain | exact |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
     for s in summaries:
         overlap_str = f"{s.claude_overlap:.2f}" if s.claude_overlap is not None else "—"
+        dom_str = f"{s.claude_domain_overlap:.2f}" if s.claude_domain_overlap is not None else "—"
         q = s.query[:40]
         lines.append(
             f"| {q} | {s.backend} | {s.iters} | {s.mean_hits:.1f} | "
-            f"{s.stddev_hits:.1f} | {int(s.mean_latency_ms)} | {s.korean_ratio:.2f} | {overlap_str} |"
+            f"{s.stddev_hits:.1f} | {int(s.mean_latency_ms)} | {s.korean_ratio:.2f} | {dom_str} | {overlap_str} |"
         )
     return "\n".join(lines) + "\n"
 
