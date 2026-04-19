@@ -212,6 +212,22 @@ def run_cycle(
             except Exception as exc:
                 rep.steps["neo4j_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # Phase H9 — G → legacy bridge (신뢰도 3등급)
+        if os.environ.get("LEGACY_BRIDGE_ENABLED", "on").lower() in {"on", "1", "true"}:
+            try:
+                from gstar.mirror.legacy_bridge import bridge_g_to_legacy
+                lim = int(os.environ.get("LEGACY_BRIDGE_LIMIT", "500"))
+                lres = bridge_g_to_legacy(store, limit=lim)
+                rep.steps["legacy_bridge"] = {
+                    "scanned": lres.scanned,
+                    "high": lres.high,
+                    "medium": lres.medium,
+                    "low": lres.low,
+                    "errors": lres.errors,
+                }
+            except Exception as exc:
+                rep.steps["legacy_bridge"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         rep.status = "success"
     except Exception as exc:
         rep.status = "failed"
