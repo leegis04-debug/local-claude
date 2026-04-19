@@ -1,0 +1,522 @@
+{
+  "raw": [
+    {
+      "backend": "tavily",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://smartapc.or.kr",
+        "https://makeai.kr/kamis-api-%EC%8B%A4%EC%8B%9C%EA%B0%84-%EB%86%8D%EC%82%B0%EB%AC%BC-%EA%B0%80%EA%B2%A9-%EC%A1%B0%ED%9A%8C",
+        "https://www.kamis.or.kr/customer/price/retail/item.do",
+        "https://nahollolaw.com/대법원-전자소송-시스템",
+        "http://common.leocom.kr/pdfcat/pdfcat2013/2013-41.pdf"
+      ],
+      "avg_snippet_len": 2177.2,
+      "korean_ratio": 0.413,
+      "latency_ms": 6137,
+      "errors": []
+    },
+    {
+      "backend": "tavily",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://smartapc.or.kr",
+        "https://makeai.kr/kamis-api-%EC%8B%A4%EC%8B%9C%EA%B0%84-%EB%86%8D%EC%82%B0%EB%AC%BC-%EA%B0%80%EA%B2%A9-%EC%A1%B0%ED%9A%8C",
+        "https://www.kamis.or.kr/customer/price/retail/item.do",
+        "https://nahollolaw.com/대법원-전자소송-시스템",
+        "http://common.leocom.kr/pdfcat/pdfcat2013/2013-41.pdf"
+      ],
+      "avg_snippet_len": 2177.2,
+      "korean_ratio": 0.413,
+      "latency_ms": 3390,
+      "errors": []
+    },
+    {
+      "backend": "tavily",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://bizfocus.kr/news/newsview.php?ncode=1065608760340132&dt=m",
+        "https://www.hani.co.kr/arti/economy/economy_general/1181960.html",
+        "https://www.chosun.com/economy/economy_general/2024/12/20/OFNKTNCBXNE6PJGDZQRAF44UKY/",
+        "https://www.jungefood.com/article/?bmode=view&idx=169101093",
+        "https://www.hankyung.com/article/2026020937787"
+      ],
+      "avg_snippet_len": 2120.6,
+      "korean_ratio": 0.58,
+      "latency_ms": 4081,
+      "errors": []
+    },
+    {
+      "backend": "tavily",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://bizfocus.kr/news/newsview.php?ncode=1065608760340132&dt=m",
+        "https://www.hani.co.kr/arti/economy/economy_general/1181960.html",
+        "https://www.chosun.com/economy/economy_general/2024/12/20/OFNKTNCBXNE6PJGDZQRAF44UKY/",
+        "https://www.jungefood.com/article/?bmode=view&idx=169101093",
+        "https://www.hankyung.com/article/2026020937787"
+      ],
+      "avg_snippet_len": 2120.6,
+      "korean_ratio": 0.58,
+      "latency_ms": 1249,
+      "errors": []
+    },
+    {
+      "backend": "tavily",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.yna.co.kr/view/AKR20260319048700055",
+        "https://www.news1.kr/economy/trend/6105331",
+        "https://v.daum.net/v/20260318164545803?f=p",
+        "https://www.irsglobal.com/bbs/rwdboard/20036",
+        "https://www.ultralytics.com/ko/blog/from-farm-to-table-how-ai-drives-innovation-in-agriculture"
+      ],
+      "avg_snippet_len": 1641.8,
+      "korean_ratio": 0.586,
+      "latency_ms": 2217,
+      "errors": []
+    },
+    {
+      "backend": "tavily",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://www.yna.co.kr/view/AKR20260319048700055",
+        "https://www.news1.kr/economy/trend/6105331",
+        "https://v.daum.net/v/20260318164545803?f=p",
+        "https://www.irsglobal.com/bbs/rwdboard/20036",
+        "https://www.ultralytics.com/ko/blog/from-farm-to-table-how-ai-drives-innovation-in-agriculture"
+      ],
+      "avg_snippet_len": 1641.8,
+      "korean_ratio": 0.586,
+      "latency_ms": 1120,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "http://kamis.or.kr/",
+        "https://www.kamis.or.kr/customer/main/main.do",
+        "http://www.kamis.co.kr/",
+        "https://www.korea.kr/briefing/policyBriefingView.do?newsId=148730704&pWise=sub&pWiseSub=J2",
+        "https://www.kamis.or.kr/customer/trend/item/item.do"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.302,
+      "latency_ms": 503,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "http://kamis.or.kr/",
+        "https://www.kamis.or.kr/customer/main/main.do",
+        "http://www.kamis.co.kr/",
+        "https://www.korea.kr/briefing/policyBriefingView.do?newsId=148730704&pWise=sub&pWiseSub=J2",
+        "https://www.kamis.or.kr/customer/trend/item/item.do"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.302,
+      "latency_ms": 212,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.yna.co.kr/view/GYH20240428000200044",
+        "https://www.sportschosun.com/life/2024-04-28/202404280100215260028826",
+        "https://heylimja.com/entry/2024%EB%85%84-%EC%9E%90%EC%98%81%EC%97%85-%ED%8F%90%EC%97%85%EB%A5%A0-TOP5-%EC%97%85%EC%A2%85-%EA%B3%B5%EA%B0%9C",
+        "https://www.kado.net/news/articleView.html?idxno=1285090",
+        "https://www.yna.co.kr/view/AKR20240426137400017"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.414,
+      "latency_ms": 1011,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://www.yna.co.kr/view/GYH20240428000200044",
+        "https://www.sportschosun.com/life/2024-04-28/202404280100215260028826",
+        "https://heylimja.com/entry/2024%EB%85%84-%EC%9E%90%EC%98%81%EC%97%85-%ED%8F%90%EC%97%85%EB%A5%A0-TOP5-%EC%97%85%EC%A2%85-%EA%B3%B5%EA%B0%9C",
+        "https://www.kado.net/news/articleView.html?idxno=1285090",
+        "https://www.yna.co.kr/view/AKR20240426137400017"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.414,
+      "latency_ms": 821,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.bioin.or.kr/board.do?bid=notice&cmd=view&num=333382",
+        "http://agri-ai.kr/",
+        "https://www.nextunicorn.kr/support-programs/ddaace61e6833698",
+        "http://www.nongup.net/news/articleView.html?idxno=32732",
+        "http://www.youngnong.co.kr/news/articleView.html?idxno=58332"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.458,
+      "latency_ms": 510,
+      "errors": []
+    },
+    {
+      "backend": "exa",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://www.bioin.or.kr/board.do?bid=notice&cmd=view&num=333382",
+        "http://agri-ai.kr/",
+        "https://www.nextunicorn.kr/support-programs/ddaace61e6833698",
+        "http://www.nongup.net/news/articleView.html?idxno=32732",
+        "http://www.youngnong.co.kr/news/articleView.html?idxno=58332"
+      ],
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.458,
+      "latency_ms": 214,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 0,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 240,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 1,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 221,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 0,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 240,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 1,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 237,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 0,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 241,
+      "errors": []
+    },
+    {
+      "backend": "searchapi",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 1,
+      "hits": 0,
+      "urls": [],
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 246,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.skyscanner.com.au/?msockid=12e73453a123640b38742313a0f965a8",
+        "https://www.skyscanner.com.au/flights?msockid=12e73453a123640b38742313a0f965a8",
+        "https://www.skyscanner.com.au/car-hire-from/mel/car-hire-from-melbourne-tullamarine-airport.html?msockid=12e73453a123640b38742313a0f965a8",
+        "https://www.skyscanner.com.au/flights-to/syd/cheap-flights-to-sydney-airport.html?msockid=12e73453a123640b38742313a0f965a8",
+        "https://www.skyscanner.com.au/flights-to/bne/cheap-flights-to-brisbane-airport.html?msockid=12e73453a123640b38742313a0f965a8"
+      ],
+      "avg_snippet_len": 164.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 439,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://github.com/chat4us/gpt-5",
+        "https://github.com/lencx/ChatGPT/releases",
+        "https://github.com/chatanywhere/GPT_API_free",
+        "https://www.zhihu.com/topic/26691895",
+        "https://cellphones.com.vn/sforum/cach-dung-chatgpt"
+      ],
+      "avg_snippet_len": 87.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 174,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.ifoodedu.or.kr/",
+        "https://www.foodservice.or.kr/",
+        "https://namu.wiki/w/외식업",
+        "https://www.kofsia.or.kr/main",
+        "https://www.foodicon.co.kr/news/articleView.html?idxno=29539"
+      ],
+      "avg_snippet_len": 115.8,
+      "korean_ratio": 0.601,
+      "latency_ms": 327,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://www.ifoodedu.or.kr/",
+        "https://www.foodservice.or.kr/",
+        "https://namu.wiki/w/외식업",
+        "https://www.kofsia.or.kr/main",
+        "https://www.foodicon.co.kr/news/articleView.html?idxno=29539"
+      ],
+      "avg_snippet_len": 100.2,
+      "korean_ratio": 0.573,
+      "latency_ms": 272,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 0,
+      "hits": 5,
+      "urls": [
+        "https://www.cnblogs.com/risc5-ble/p/16547892.html",
+        "https://hiknow-prd-oss.oss-cn-hangzhou.aliyuncs.com/asset/7543c453190b41659aa422b1f946cb67.PDF",
+        "http://dealer-static.hikvision.com/upload/file/doc/DOC000061437-UD17064B-B_人脸识别考勤机_用户手册_V1.1_20221215.PDF.PDF",
+        "https://www.sohu.com/a/796572439_121894855",
+        "https://bk.taobao.com/k/jiankongqi_20530/98f5cecf6c716a286e1209ad3acf41d8.html"
+      ],
+      "avg_snippet_len": 106.0,
+      "korean_ratio": 0.0,
+      "latency_ms": 206,
+      "errors": []
+    },
+    {
+      "backend": "ddg",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iter_idx": 1,
+      "hits": 5,
+      "urls": [
+        "https://chouseisan.com/",
+        "https://chouseisan.com/auth/login",
+        "https://chouseisan.com/l/meeting/",
+        "https://chouseisan.com/l/kanji/",
+        "https://chouseisan.com/l/kaigi/"
+      ],
+      "avg_snippet_len": 69.8,
+      "korean_ratio": 0.0,
+      "latency_ms": 303,
+      "errors": []
+    }
+  ],
+  "summaries": [
+    {
+      "backend": "tavily",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 4763.5,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 2177.2,
+      "korean_ratio": 0.413,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "tavily",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 2665,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 2120.6,
+      "korean_ratio": 0.58,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "tavily",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 1668.5,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 1641.8,
+      "korean_ratio": 0.586,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "exa",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 357.5,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.302,
+      "claude_overlap": 0.2
+    },
+    {
+      "backend": "exa",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 916,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.414,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "exa",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 362,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 400.0,
+      "korean_ratio": 0.458,
+      "claude_overlap": 0.2
+    },
+    {
+      "backend": "searchapi",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iters": 2,
+      "mean_hits": 0,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 230.5,
+      "unique_url_ratio": 0.0,
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "searchapi",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iters": 2,
+      "mean_hits": 0,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 238.5,
+      "unique_url_ratio": 0.0,
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "searchapi",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iters": 2,
+      "mean_hits": 0,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 243.5,
+      "unique_url_ratio": 0.0,
+      "avg_snippet_len": 0.0,
+      "korean_ratio": 0.0,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "ddg",
+      "query": "KAMIS 농산물 유통 정보 시스템 공식 사이트",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 306.5,
+      "unique_url_ratio": 1.0,
+      "avg_snippet_len": 125.5,
+      "korean_ratio": 0.0,
+      "claude_overlap": 0.0
+    },
+    {
+      "backend": "ddg",
+      "query": "외식업 폐업률 2024 한국 통계",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 299.5,
+      "unique_url_ratio": 0.5,
+      "avg_snippet_len": 108.0,
+      "korean_ratio": 0.587,
+      "claude_overlap": 0.2
+    },
+    {
+      "backend": "ddg",
+      "query": "농식품 AI 응용제품 신속상용화 지원사업 2025",
+      "iters": 2,
+      "mean_hits": 5,
+      "stddev_hits": 0.0,
+      "mean_latency_ms": 254.5,
+      "unique_url_ratio": 1.0,
+      "avg_snippet_len": 87.9,
+      "korean_ratio": 0.0,
+      "claude_overlap": 0.0
+    }
+  ]
+}
