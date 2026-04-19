@@ -655,6 +655,8 @@ class TickRequest(BaseModel):
     min_community_size: int = 3
     project_ids: list[str] | None = None
     mode: str = "per_project"           # "per_project" | "global"
+    # None → LIGHT_STEPS (community+procedures), ["*"] → 전체, ["community", ...] → 명시
+    steps: list[str] | None = None
 
 
 @app.post("/worker/pause")
@@ -714,7 +716,13 @@ def worker_status():
 
 @app.post("/worker/tick")
 def worker_tick(req: TickRequest):
-    """한 tick 을 on-demand 로 실행. 상주 워커 없이도 커뮤니티 재계산 가능."""
+    """한 tick 을 on-demand 로 실행. 상주 워커 없이도 커뮤니티 재계산 가능.
+
+    기본 (req.steps=None): LIGHT_STEPS 만 실행 — community + procedures.
+    heavy step (qdrant/neo4j mirror, legacy bridge, code_repos) 은
+    `/worker/<name>` 전용 엔드포인트로 개별 호출 권장.
+    req.steps=["*"] 을 주면 이전 버전처럼 env 플래그 하에 전체 실행.
+    """
     from gstar.worker.cycle import run_cycle
 
     s = get_state()
@@ -726,10 +734,150 @@ def worker_tick(req: TickRequest):
             mode=req.mode,
             embedder=s.embedder,
             faiss=s.faiss,
+            steps=req.steps,
         )
     except Exception as exc:
         raise HTTPException(500, f"tick failed: {exc}")
     return rep.to_json()
+
+
+# -------- /worker/<heavy-step> (Phase H10: tick 분리) --------
+
+
+class QdrantMirrorRequest(BaseModel):
+    limit: int | None = None            # None → env QDRANT_MIRROR_LIMIT
+
+
+@app.post("/worker/qdrant_mirror")
+def worker_qdrant_mirror(req: QdrantMirrorRequest):
+    """G → Qdrant (`g_mirror` collection) 파생 뷰만 단독 실행."""
+    from gstar.mirror.qdrant_view import mirror_to_qdrant
+
+    s = get_state()
+    lim = req.limit if req.limit is not None else int(os.environ.get("QDRANT_MIRROR_LIMIT", "1000"))
+    try:
+        r = mirror_to_qdrant(s.store, s.embedder, limit=lim)
+    except Exception as exc:
+        raise HTTPException(500, f"qdrant_mirror failed: {type(exc).__name__}: {exc}")
+    return {
+        "collection": r.collection,
+        "scanned": r.scanned,
+        "upserted": r.upserted,
+        "failed": r.failed,
+        "errors": r.errors[:5],
+    }
+
+
+class Neo4jMirrorRequest(BaseModel):
+    limit_nodes: int | None = None
+    limit_edges: int | None = None
+
+
+@app.post("/worker/neo4j_mirror")
+def worker_neo4j_mirror(req: Neo4jMirrorRequest):
+    """G → Neo4j (GEntity/G_REL) 파생 뷰만 단독 실행."""
+    from gstar.mirror.neo4j_view import mirror_to_neo4j
+
+    s = get_state()
+    ln = req.limit_nodes if req.limit_nodes is not None else int(os.environ.get("NEO4J_MIRROR_NODES", "200"))
+    le = req.limit_edges if req.limit_edges is not None else int(os.environ.get("NEO4J_MIRROR_EDGES", "500"))
+    try:
+        r = mirror_to_neo4j(s.store, limit_nodes=ln, limit_edges=le)
+    except Exception as exc:
+        raise HTTPException(500, f"neo4j_mirror failed: {type(exc).__name__}: {exc}")
+    return {
+        "nodes_scanned": r.scanned_nodes,
+        "nodes_upserted": r.upserted_nodes,
+        "edges_scanned": r.scanned_edges,
+        "edges_upserted": r.upserted_edges,
+        "failed": r.failed,
+        "errors": r.errors[:5],
+    }
+
+
+class LegacyBridgeRequest(BaseModel):
+    limit: int | None = None
+
+
+@app.post("/worker/legacy_bridge")
+def worker_legacy_bridge(req: LegacyBridgeRequest):
+    """G → legacy Gateway `/search/hybrid` 연결 레이어 (coarse, 3등급)."""
+    from gstar.mirror.legacy_bridge import bridge_g_to_legacy
+
+    s = get_state()
+    try:
+        r = bridge_g_to_legacy(s.store, limit=req.limit)
+    except Exception as exc:
+        raise HTTPException(500, f"legacy_bridge failed: {type(exc).__name__}: {exc}")
+    return {
+        "scanned": r.scanned,
+        "high": r.high,
+        "medium": r.medium,
+        "low": r.low,
+        "errors": r.errors,
+    }
+
+
+class LegacyFactRequest(BaseModel):
+    per_tick: int | None = None
+
+
+@app.post("/worker/legacy_fact")
+def worker_legacy_fact(req: LegacyFactRequest):
+    """legacy qdrant_meta chunk → 문장 분해 → G fact 매칭 (fine-grained)."""
+    from gstar.mirror.legacy_fact_bridge import bridge_legacy_to_g_facts
+
+    s = get_state()
+    # endpoint 호출 자체가 명시적 opt-in 이므로 env gate 우회
+    prev = os.environ.get("LEGACY_FACT_BRIDGE_ENABLED")
+    os.environ["LEGACY_FACT_BRIDGE_ENABLED"] = "on"
+    try:
+        r = bridge_legacy_to_g_facts(s.store, per_tick=req.per_tick)
+    except Exception as exc:
+        raise HTTPException(500, f"legacy_fact failed: {type(exc).__name__}: {exc}")
+    finally:
+        if prev is None:
+            os.environ.pop("LEGACY_FACT_BRIDGE_ENABLED", None)
+        else:
+            os.environ["LEGACY_FACT_BRIDGE_ENABLED"] = prev
+    return {
+        "chunks_scanned": r.chunks_scanned,
+        "sentences_extracted": r.sentences_extracted,
+        "matched_high": r.sentences_matched_high,
+        "matched_medium": r.sentences_matched_medium,
+        "cursor_after": r.cursor_after,
+    }
+
+
+class CodeReposRequest(BaseModel):
+    per_tick: int | None = None
+
+
+@app.post("/worker/code_repos")
+def worker_code_repos(req: CodeReposRequest):
+    """NAS code_repos 점진 이관 — tick 당 per_tick 파일만 처리."""
+    from gstar.worker.code_repos_ingest import ingest_code_repos_batch
+
+    s = get_state()
+    # endpoint 호출 자체가 명시적 opt-in 이므로 env gate 우회
+    prev = os.environ.get("CODE_REPOS_ENABLED")
+    os.environ["CODE_REPOS_ENABLED"] = "on"
+    try:
+        r = ingest_code_repos_batch(s.store, s.faiss, s.embedder, per_tick=req.per_tick)
+    except Exception as exc:
+        raise HTTPException(500, f"code_repos failed: {type(exc).__name__}: {exc}")
+    finally:
+        if prev is None:
+            os.environ.pop("CODE_REPOS_ENABLED", None)
+        else:
+            os.environ["CODE_REPOS_ENABLED"] = prev
+    return {
+        "scanned": r.scanned,
+        "ingested": r.ingested,
+        "errors": r.errors,
+        "cursor_before": r.cursor_before,
+        "cursor_after": r.cursor_after,
+    }
 
 
 # -------- /notes (Phase D1: G + Qdrant mirror) --------

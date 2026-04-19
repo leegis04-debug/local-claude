@@ -102,6 +102,31 @@ def _write_tick(store, rep: TickReport) -> None:
             pass  # tick 기록 실패가 워커 자체를 막지 않음
 
 
+LIGHT_STEPS = ("community", "procedures")
+HEAVY_STEPS = (
+    "qdrant_mirror",
+    "neo4j_mirror",
+    "legacy_bridge",
+    "legacy_fact_bridge",
+    "code_repos",
+)
+ALL_STEPS = LIGHT_STEPS + HEAVY_STEPS
+
+
+def _resolve_steps(steps: list[str] | None) -> set[str]:
+    """steps 입력을 실제 실행 집합으로 해석.
+
+    - None → LIGHT_STEPS (기본: community + procedures만). 가벼운 tick.
+    - ["*"] → 전체 (env 플래그 추가 gate 유지). 이전 버전 호환.
+    - 리스트 → 명시된 항목만 실행.
+    """
+    if steps is None:
+        return set(LIGHT_STEPS)
+    if len(steps) == 1 and steps[0] == "*":
+        return set(ALL_STEPS)
+    return {s for s in steps if s in ALL_STEPS}
+
+
 def run_cycle(
     store,
     *,
@@ -112,17 +137,30 @@ def run_cycle(
     mine_traces: bool = True,
     embedder=None,
     faiss=None,
+    steps: list[str] | None = None,
 ) -> TickReport:
     """Worker 한 주기 실행.
 
     project_ids 를 지정하면 해당 project_id 만 community detection.
     None 이면 전체 project_id 순회 (대용량 주의).
+
+    steps (Phase H 이후 tick 분리):
+      - None: LIGHT_STEPS만 실행 (community, procedures). 빠르고 crash 위험 낮음.
+      - ["*"]: 이전 버전 호환 — 모든 step 을 env 플래그 gate 하에 실행.
+      - ["community", "qdrant_mirror", ...]: 명시된 것만.
+
+    heavy step (qdrant/neo4j mirror, legacy bridge, code_repos) 은 각각
+    `/worker/<name>` 엔드포인트로 개별 호출 권장.
     """
     from gstar.worker.community import detect_louvain
+
+    active_steps = _resolve_steps(steps)
+    rep_steps_requested = sorted(active_steps)
 
     tick_id = str(ULID())
     started_at = datetime.now(timezone.utc)
     rep = TickReport(tick_id=tick_id, started_at=started_at, status="running")
+    rep.steps["_requested"] = rep_steps_requested
     _write_tick(store, rep)
 
     if skip_if_paused and is_paused():
@@ -134,38 +172,39 @@ def run_cycle(
 
     t0 = time.time()
     try:
-        community_summaries = []
-        if mode == "global":
-            results = detect_louvain(
-                store, min_community_size=min_community_size, mode="global"
-            )
-        elif project_ids is None:
-            results = detect_louvain(store, min_community_size=min_community_size)
-        else:
-            results = []
-            for pid in project_ids:
-                results.extend(
-                    detect_louvain(store, project_id=pid, min_community_size=min_community_size)
+        if "community" in active_steps:
+            community_summaries = []
+            if mode == "global":
+                results = detect_louvain(
+                    store, min_community_size=min_community_size, mode="global"
                 )
-        for r in results:
-            community_summaries.append(
-                {
-                    "project_id": r.project_id,
-                    "algorithm": r.algorithm,
-                    "communities": r.communities,
-                    "members_total": r.members_total,
-                    "skipped_small": r.skipped_small,
-                    "updated_entities": r.updated_entities,
-                }
-            )
-        rep.steps["community"] = {
-            "count": sum(s["communities"] for s in community_summaries),
-            "projects": len(community_summaries),
-            "details": community_summaries,
-        }
+            elif project_ids is None:
+                results = detect_louvain(store, min_community_size=min_community_size)
+            else:
+                results = []
+                for pid in project_ids:
+                    results.extend(
+                        detect_louvain(store, project_id=pid, min_community_size=min_community_size)
+                    )
+            for r in results:
+                community_summaries.append(
+                    {
+                        "project_id": r.project_id,
+                        "algorithm": r.algorithm,
+                        "communities": r.communities,
+                        "members_total": r.members_total,
+                        "skipped_small": r.skipped_small,
+                        "updated_entities": r.updated_entities,
+                    }
+                )
+            rep.steps["community"] = {
+                "count": sum(s["communities"] for s in community_summaries),
+                "projects": len(community_summaries),
+                "details": community_summaries,
+            }
 
         # Phase G6 — trace → procedure 패턴 추출
-        if mine_traces:
+        if mine_traces and "procedures" in active_steps:
             try:
                 from gstar.worker.procedures import mine_procedures
                 mres = mine_procedures(store, embedder=embedder, faiss=faiss)
@@ -179,7 +218,8 @@ def run_cycle(
                 rep.steps["procedures"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # Phase H5 — G → Qdrant 파생 뷰 emit (embedder 있을 때만)
-        if embedder is not None and os.environ.get("QDRANT_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}:
+        if ("qdrant_mirror" in active_steps and embedder is not None
+                and os.environ.get("QDRANT_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}):
             try:
                 from gstar.mirror.qdrant_view import mirror_to_qdrant
                 mirror_limit = int(os.environ.get("QDRANT_MIRROR_LIMIT", "1000"))
@@ -195,7 +235,8 @@ def run_cycle(
                 rep.steps["qdrant_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # Phase H6 — G → Neo4j 파생 뷰 emit
-        if os.environ.get("NEO4J_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}:
+        if ("neo4j_mirror" in active_steps
+                and os.environ.get("NEO4J_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}):
             try:
                 from gstar.mirror.neo4j_view import mirror_to_neo4j
                 nlim = int(os.environ.get("NEO4J_MIRROR_NODES", "200"))
@@ -213,7 +254,8 @@ def run_cycle(
                 rep.steps["neo4j_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # Phase H9 — G → legacy bridge (신뢰도 3등급)
-        if os.environ.get("LEGACY_BRIDGE_ENABLED", "on").lower() in {"on", "1", "true"}:
+        if ("legacy_bridge" in active_steps
+                and os.environ.get("LEGACY_BRIDGE_ENABLED", "on").lower() in {"on", "1", "true"}):
             try:
                 from gstar.mirror.legacy_bridge import bridge_g_to_legacy
                 lim = int(os.environ.get("LEGACY_BRIDGE_LIMIT", "500"))
@@ -229,7 +271,8 @@ def run_cycle(
                 rep.steps["legacy_bridge"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # H9 fine-grained — legacy chunk 를 문장 분해 후 G fact 와 매칭
-        if os.environ.get("LEGACY_FACT_BRIDGE_ENABLED", "off").lower() in {"on", "1", "true"}:
+        if ("legacy_fact_bridge" in active_steps
+                and os.environ.get("LEGACY_FACT_BRIDGE_ENABLED", "off").lower() in {"on", "1", "true"}):
             try:
                 from gstar.mirror.legacy_fact_bridge import bridge_legacy_to_g_facts
                 fres = bridge_legacy_to_g_facts(store)
@@ -244,7 +287,8 @@ def run_cycle(
                 rep.steps["legacy_fact_bridge"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # code_repos 점진 이관 — CODE_REPOS_ENABLED=on 필요 (기본 off)
-        if embedder is not None and os.environ.get("CODE_REPOS_ENABLED", "off").lower() in {"on", "1", "true"}:
+        if ("code_repos" in active_steps and embedder is not None
+                and os.environ.get("CODE_REPOS_ENABLED", "off").lower() in {"on", "1", "true"}):
             try:
                 from gstar.worker.code_repos_ingest import ingest_code_repos_batch
                 cres = ingest_code_repos_batch(store, faiss, embedder)
