@@ -160,6 +160,52 @@ def ingest_path(
         fact_nodes.append(n)
         store.insert_node(n)
 
+        # Phase H3: event/evidence 정규식 추출 (structured 모드만)
+        if doc_section_facts is not None:
+            try:
+                from gstar.ingest.event_extract import (
+                    event_text,
+                    extract_events_from_text,
+                    extract_evidence_from_text,
+                )
+                for ev in extract_events_from_text(f.text, line_no=f.line_no):
+                    ev_node = Node(
+                        kind="event",
+                        text=event_text(ev),
+                        attrs={
+                            "year": ev.year,
+                            "month": ev.month,
+                            "day": ev.day,
+                            "raw": ev.date_text,
+                            "source": f.source,
+                            "line_no": ev.line_no,
+                        },
+                        source_namespace=ns,
+                    )
+                    store.insert_node(ev_node)
+                    # (event) -[when_of]-> (fact)
+                    store.insert_edge(Edge(
+                        src=ev_node.id, dst=n.id, kind="when_of", weight=1.0, evidence_ids=[],
+                    ))
+                for evd in extract_evidence_from_text(f.text, line_no=f.line_no):
+                    evd_node = Node(
+                        kind="evidence",
+                        text=evd.text[:500],
+                        attrs={
+                            "kind": evd.kind,
+                            "source": f.source,
+                            "line_no": evd.line_no,
+                        },
+                        source_namespace=ns,
+                    )
+                    store.insert_node(evd_node)
+                    # (fact) -[evidence_of]-> (evidence)
+                    store.insert_edge(Edge(
+                        src=n.id, dst=evd_node.id, kind="evidence_of", weight=1.0, evidence_ids=[],
+                    ))
+            except Exception:
+                pass    # H3 추출 실패가 ingest 전체를 막지 않음
+
         # Phase H2: fact part_of section (structured 모드만)
         if doc_section_facts is not None:
             sec_real = placeholder_to_node.get(getattr(f, "section_id", ""))
