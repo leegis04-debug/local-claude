@@ -111,7 +111,7 @@ async def enrich_stream(req: EnrichRequestModel):
 def enrich_health() -> dict:
     return {
         "ok": True,
-        "backend": os.environ.get("ENRICH_SEARCH_BACKEND", "mock"),
+        "backend": os.environ.get("ENRICH_SEARCH_BACKEND", "ddg"),
         "ollama": os.environ.get("ENRICH_OLLAMA_HOST", "http://localhost:11434"),
         "model": os.environ.get("ENRICH_OLLAMA_MODEL", "gemma4:26b-a4b-it-q4_K_M"),
     }

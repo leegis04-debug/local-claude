@@ -10,13 +10,18 @@ from typing import Any
 async def web_search(
     query: str,
     *,
-    backend: str = "mock",
+    backend: str = "ddg",
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
-    """쿼리 → [{"title", "url", "snippet", "content"}, ...]"""
-    backend = (backend or "mock").lower()
+    """쿼리 → [{"title", "url", "snippet", "content"}, ...]
+
+    기본 백엔드 `ddg` — DuckDuckGo 무료·무키. API 키 불필요.
+    """
+    backend = (backend or "ddg").lower()
     if backend == "mock":
         return _mock_results(query, top_k)
+    if backend == "ddg" or backend == "duckduckgo":
+        return await _ddg_search(query, top_k)
     if backend == "brave":
         return await _brave_search(query, top_k)
     if backend == "serpapi":
@@ -24,6 +29,28 @@ async def web_search(
     if backend == "firecrawl":
         return await _firecrawl_search(query, top_k)
     return _mock_results(query, top_k)
+
+
+async def _ddg_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """DuckDuckGo — duckduckgo-search 라이브러리, API 키 불필요."""
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        return []
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=top_k, region="kr-kr"))
+        return [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("href", r.get("url", "")),
+                "snippet": r.get("body", ""),
+                "content": r.get("body", ""),
+            }
+            for r in results
+        ]
+    except Exception:
+        return []
 
 
 def _mock_results(query: str, top_k: int) -> list[dict[str, Any]]:
