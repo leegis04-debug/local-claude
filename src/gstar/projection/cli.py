@@ -146,13 +146,66 @@ def _project_id_from_dir(project_dir: Path) -> str:
 
 
 def _retrieval_hits(query: str, top_k: int, namespace: str | None) -> list:
-    """GClient 없이 로컬 DuckDB + FAISS 로 검색. serve 실행 중이면 GClient 사용."""
+    """Retrieval 전략:
+    1. `GP_LOCAL_RETRIEVAL=on` (기본 on) — 로컬 DuckDB+FAISS 에서 gravity 검색
+    2. 로컬 실패·off 이면 원격 g-serve GClient.search() 폴백
+    """
+    mode = os.environ.get("GP_LOCAL_RETRIEVAL", "on").lower()
+    if mode == "on":
+        local = _retrieval_hits_local(query, top_k, namespace)
+        if local:
+            return local
     try:
         from gstar.client import from_env
 
         client = from_env()
         hits = client.search(query, top_k=top_k, namespace=namespace)
         return list(hits)
+    except Exception:
+        return []
+
+
+def _retrieval_hits_local(query: str, top_k: int, namespace: str | None) -> list:
+    """로컬 DuckStore+FAISS 로 gravity 검색. GClient 와 동일 필드를 가진 dict 반환."""
+    try:
+        from gstar.config import Weights
+        from gstar.embedding.sbert import SBertEmbedder
+        from gstar.gravity.field import compute_gravity
+        from gstar.schema import Goal
+
+        paths = Paths.load()
+        if not paths.db.exists():
+            return []
+        weights = Weights.load(paths.config)
+        embedder = SBertEmbedder()
+        faiss = FaissStore(paths.faiss, dim=embedder.dim)
+        store = DuckStore(paths.db)
+        try:
+            goal_emb = embedder.encode([query])[0]
+            tmp_goal = Goal(text=query, kind="proposal")
+            entries = compute_gravity(tmp_goal, goal_emb, store, faiss, weights)
+            out: list = []
+            for e in entries[: top_k * 3]:  # 여유 후 namespace 필터
+                n = store.get_node(e.node_id)
+                if n is None:
+                    continue
+                if namespace and n.source_namespace != namespace:
+                    continue
+                out.append(
+                    {
+                        "text": n.text,
+                        "score": float(e.total),
+                        "source": f"{n.source_namespace}/{(n.attrs or {}).get('source', '')}",
+                        "node_id": n.id,
+                        "content_hash": n.content_hash,
+                        "namespace": n.source_namespace,
+                    }
+                )
+                if len(out) >= top_k:
+                    break
+            return out
+        finally:
+            store.close()
     except Exception:
         return []
 
