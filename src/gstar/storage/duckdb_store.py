@@ -103,6 +103,30 @@ class DuckStore:
                 node.id = existing[0]
                 return
 
+            # PK id 충돌 방어: 같은 ULID 가 이미 존재하면 새 ULID 재할당 후 재시도
+            # (ULID 생성 라이브러리 race·시계 해상도 엣지케이스)
+            try:
+                from ulid import ULID as _ULID
+            except Exception:
+                _ULID = None
+            for _retry in range(3):
+                row_pk = self.conn.execute(
+                    "SELECT 1 FROM node WHERE id = ?", [node.id]
+                ).fetchone()
+                if row_pk is None:
+                    break
+                if _ULID is None:
+                    raise RuntimeError(
+                        f"node.id 충돌 {node.id} 인데 ulid 재할당 불가"
+                    )
+                node.id = str(_ULID())
+                # content_hash 는 id 의존 — 재계산
+                node.content_hash = compute_content_hash(node)
+            else:
+                raise RuntimeError(
+                    f"node.id 충돌 3회 재시도 실패 {node.id}"
+                )
+
             # prev_hash 미지정이면 동일 namespace 의 직전 노드에서 링크
             if node.prev_hash is None:
                 prev_row = self.conn.execute(
@@ -113,7 +137,8 @@ class DuckStore:
                 node.prev_hash = prev_row[0] if prev_row else None
 
             self.conn.execute(
-                f"INSERT INTO node ({self._NODE_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO node ({self._NODE_COLS}) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 [
                     node.id,
                     node.kind,
@@ -185,9 +210,26 @@ class DuckStore:
 
     def insert_edge(self, edge: Edge) -> None:
         with self.lock:
+            # PK id 충돌 방어 (ULID 재할당 최대 3회)
+            try:
+                from ulid import ULID as _ULID
+            except Exception:
+                _ULID = None
+            for _retry in range(3):
+                row = self.conn.execute(
+                    "SELECT 1 FROM edge WHERE id = ?", [edge.id]
+                ).fetchone()
+                if row is None:
+                    break
+                if _ULID is None:
+                    raise RuntimeError(f"edge.id 충돌 {edge.id} 인데 ulid 재할당 불가")
+                edge.id = str(_ULID())
+            else:
+                raise RuntimeError(f"edge.id 충돌 3회 재시도 실패 {edge.id}")
+
             self.conn.execute(
                 "INSERT INTO edge (id, src, dst, kind, weight, evidence_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 [
                     edge.id,
                     edge.src,
