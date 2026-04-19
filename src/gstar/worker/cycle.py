@@ -194,6 +194,24 @@ def run_cycle(
             except Exception as exc:
                 rep.steps["qdrant_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # Phase H6 — G → Neo4j 파생 뷰 emit
+        if os.environ.get("NEO4J_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}:
+            try:
+                from gstar.mirror.neo4j_view import mirror_to_neo4j
+                nlim = int(os.environ.get("NEO4J_MIRROR_NODES", "200"))
+                elim = int(os.environ.get("NEO4J_MIRROR_EDGES", "500"))
+                nres = mirror_to_neo4j(store, limit_nodes=nlim, limit_edges=elim)
+                rep.steps["neo4j_mirror"] = {
+                    "nodes_scanned": nres.scanned_nodes,
+                    "nodes_upserted": nres.upserted_nodes,
+                    "edges_scanned": nres.scanned_edges,
+                    "edges_upserted": nres.upserted_edges,
+                    "failed": nres.failed,
+                    "errors": nres.errors[:3],
+                }
+            except Exception as exc:
+                rep.steps["neo4j_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         rep.status = "success"
     except Exception as exc:
         rep.status = "failed"
