@@ -190,11 +190,13 @@ def _create_canonical(
     scope: str | None = None,
 ) -> CanonicalEntity:
     cid = _ulid()
-    store.conn.execute(
-        f"INSERT INTO entity_canonical ({_CANON_COLS}, node_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
-        [cid, project_id, track, canonical_name, kind.value, scope, 1, _ts()],
-    )
+    # 병렬 호출 race + ULID 시계분해능 엣지케이스 방어
+    with store.lock:
+        store.conn.execute(
+            f"INSERT INTO entity_canonical ({_CANON_COLS}, node_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT DO NOTHING",
+            [cid, project_id, track, canonical_name, kind.value, scope, 1, _ts()],
+        )
     return CanonicalEntity(
         id=cid,
         project_id=project_id,

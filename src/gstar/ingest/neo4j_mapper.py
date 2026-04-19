@@ -218,10 +218,11 @@ def apply_dump(
     ids_to_embed: list[str] = []
 
     # 기존 graph_import 노드 재사용 (멱등)
-    existing_nodes = store.conn.execute(
-        "SELECT id, attrs_json FROM node WHERE kind='entity' AND source_namespace=?",
-        [namespace],
-    ).fetchall()
+    with store.lock:
+        existing_nodes = store.conn.execute(
+            "SELECT id, attrs_json FROM node WHERE kind='entity' AND source_namespace=?",
+            [namespace],
+        ).fetchall()
     for row in existing_nodes:
         try:
             a = json.loads(row[1])
@@ -255,21 +256,25 @@ def apply_dump(
             ids_to_embed.append(node.id)
 
         # entity_canonical upsert (project_id + track + canonical_name 기준)
-        existing = store.conn.execute(
-            "SELECT id FROM entity_canonical WHERE project_id=? AND track=? AND canonical_name=?",
-            [me.project_id, me.track, me.canonical_name],
-        ).fetchone()
-        if existing:
-            reused_entities += 1
-            continue
-        cid = str(ULID())
-        store.conn.execute(
-            "INSERT INTO entity_canonical "
-            "(id, project_id, track, canonical_name, kind, scope, mentions, node_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
-            [cid, me.project_id, me.track, me.canonical_name, me.kind,
-             1, nid_to_node[me.neo4j_id], ts_now],
-        )
+        # DuckDB threadpool 병렬 호출 race 방어: lock 내부에서 check + insert.
+        # PK 는 ULID 라 충돌 가능성 극히 낮지만, 동일 프로세스 내 시계 분해능
+        # 이슈·재시도 경로까지 덮기 위해 ON CONFLICT DO NOTHING 적용.
+        with store.lock:
+            existing = store.conn.execute(
+                "SELECT id FROM entity_canonical WHERE project_id=? AND track=? AND canonical_name=?",
+                [me.project_id, me.track, me.canonical_name],
+            ).fetchone()
+            if existing:
+                reused_entities += 1
+                continue
+            cid = str(ULID())
+            store.conn.execute(
+                "INSERT INTO entity_canonical "
+                "(id, project_id, track, canonical_name, kind, scope, mentions, node_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?) ON CONFLICT DO NOTHING",
+                [cid, me.project_id, me.track, me.canonical_name, me.kind,
+                 1, nid_to_node[me.neo4j_id], ts_now],
+            )
         new_entities += 1
 
     # embed 일괄
@@ -293,10 +298,11 @@ def apply_dump(
             skipped_edges += 1
             continue
         # 중복 edge 체크 (src, dst, relation_type)
-        existing = store.conn.execute(
-            "SELECT id FROM edge WHERE src=? AND dst=? AND relation_type=?",
-            [src_id, dst_id, mr.relation_type],
-        ).fetchone()
+        with store.lock:
+            existing = store.conn.execute(
+                "SELECT id FROM edge WHERE src=? AND dst=? AND relation_type=?",
+                [src_id, dst_id, mr.relation_type],
+            ).fetchone()
         if existing:
             skipped_edges += 1
             continue
@@ -308,10 +314,11 @@ def apply_dump(
             evidence_ids=[],
         )
         store.insert_edge(edge)
-        store.conn.execute(
-            "UPDATE edge SET relation_type = ? WHERE id = ?",
-            [mr.relation_type, edge.id],
-        )
+        with store.lock:
+            store.conn.execute(
+                "UPDATE edge SET relation_type = ? WHERE id = ?",
+                [mr.relation_type, edge.id],
+            )
         created_edges += 1
 
     try:
