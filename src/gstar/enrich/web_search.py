@@ -28,6 +28,8 @@ async def web_search(
         return await _serpapi_search(query, top_k)
     if backend == "firecrawl":
         return await _firecrawl_search(query, top_k)
+    if backend == "tavily":
+        return await _tavily_search(query, top_k)
     if backend == "naver" or backend == "playwright_naver":
         return await _naver_playwright(query, top_k)
     if backend == "google" or backend == "playwright_google":
@@ -233,6 +235,82 @@ async def _serpapi_search(query: str, top_k: int) -> list[dict[str, Any]]:
             }
             for r in organic
         ]
+
+
+async def _tavily_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """Tavily — AI-최적 검색. 검색 결과에 raw_content 포함 (fetch 생략 가능)."""
+    import httpx
+
+    key = os.environ.get("TAVILY_API_KEY")
+    if not key:
+        return []
+    body = {
+        "api_key": key,
+        "query": query,
+        "search_depth": "advanced",
+        "max_results": top_k,
+        "include_raw_content": True,
+        "include_answer": False,
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post("https://api.tavily.com/search", json=body)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        results = (data.get("results") or [])[:top_k]
+        return [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "snippet": r.get("content", ""),
+                "content": r.get("raw_content") or r.get("content", ""),
+            }
+            for r in results
+        ]
+
+
+async def web_fetch(url: str, *, timeout_s: float = 20.0, max_chars: int = 20_000) -> str:
+    """Claude WebFetch 대체. URL → 본문 텍스트.
+
+    1차: httpx 간단 GET + BeautifulSoup (JS 없는 페이지)
+    2차: Playwright 렌더 (JS 필요 페이지)
+    """
+    try:
+        import httpx
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+
+    async with httpx.AsyncClient(
+        timeout=timeout_s,
+        headers={"User-Agent": "Mozilla/5.0 local-claude/enrich"},
+        follow_redirects=True,
+    ) as client:
+        try:
+            r = await client.get(url)
+            if r.status_code != 200:
+                return ""
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tag in soup(["script", "style", "noscript", "nav", "footer"]):
+                tag.decompose()
+            text = soup.get_text("\n", strip=True)
+            if text and len(text) > 200:
+                return text[:max_chars]
+        except Exception:
+            pass
+
+    try:
+        html = await _playwright_fetch_html(url, timeout_ms=int(timeout_s * 1000))
+        if not html:
+            return ""
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript", "nav", "footer"]):
+            tag.decompose()
+        return soup.get_text("\n", strip=True)[:max_chars]
+    except Exception:
+        return ""
 
 
 async def _firecrawl_search(query: str, top_k: int) -> list[dict[str, Any]]:
