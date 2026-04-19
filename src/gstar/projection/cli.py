@@ -449,6 +449,7 @@ def run_cmd(
                     task.name,
                     coherence_mode=coherence_mode,
                     ollama_model=model,
+                    stage=stage,
                 )
             )
 

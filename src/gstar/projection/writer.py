@@ -59,6 +59,38 @@ def _write_code(text: str, out_path: Path) -> int:
     return out_path.stat().st_size
 
 
+def _save_persona_drafts(sections: list[RenderedSection], stage_dir: Path) -> None:
+    """각 페르소나 드래프트를 `_wip/{role}.md` 로 저장 (섹션별 합쳐서)."""
+    any_draft = any(s.persona_drafts for s in sections)
+    if not any_draft:
+        return
+    wip_dir = stage_dir / "_wip"
+    wip_dir.mkdir(parents=True, exist_ok=True)
+    role_buckets: dict[str, list[str]] = {}
+    for s in sections:
+        for d in s.persona_drafts:
+            role_buckets.setdefault(d.role, []).append(
+                f"## {s.section.title}\n\n{d.text.rstrip()}"
+            )
+    for role, blocks in role_buckets.items():
+        path = wip_dir / f"{role}.md"
+        path.write_text("\n\n---\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+def _backup_previous_version(out_path: Path) -> None:
+    """기존 메인 파일이 있으면 `_versions/{stem}-{timestamp}.md` 로 백업."""
+    if not out_path.exists():
+        return
+    versions_dir = out_path.parent / "_versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup = versions_dir / f"{out_path.stem}-{ts}{out_path.suffix}"
+    try:
+        backup.write_bytes(out_path.read_bytes())
+    except OSError:
+        pass
+
+
 def _save_run(
     store: DuckStore,
     project_id: str,
@@ -133,6 +165,12 @@ def write(
     }
     prefix = seq_map.get(stage, "NN")
     stage_dir = project_dir / f"{prefix}-{stage}"
+
+    # 페르소나 드래프트를 _wip/ 에 저장 (있으면)
+    _save_persona_drafts(sections, stage_dir)
+    # 기존 메인 파일 있으면 _versions/ 로 백업
+    out_path_candidate = stage_dir / f"{stage}.md"
+    _backup_previous_version(out_path_candidate)
 
     merged = render_merge(sections)
     citations = citations or []
