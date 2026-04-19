@@ -32,6 +32,11 @@ def chunk_file(path: Path, root: Path | None = None, min_len: int = 8) -> list[F
     """단일 파일을 fact 리스트로 분해."""
 
     raw = path.read_text(encoding="utf-8", errors="replace")
+    # NULL byte / 기타 control character 정화 — kiwipiepy 같은 C extension 이 null byte 에서
+    # `corrupted double-linked list` 메모리 손상 유발 (2026-04-19 company crash 재현 조건).
+    # 허용 제어문자: \t \n \r. 나머지는 제거.
+    if "\x00" in raw or any(ord(c) < 32 and c not in "\t\n\r" for c in raw[:1024]):
+        raw = "".join(c for c in raw if c in "\t\n\r" or ord(c) >= 32)
     source = str(path.relative_to(root)) if root else str(path)
 
     facts: list[Fact] = []
