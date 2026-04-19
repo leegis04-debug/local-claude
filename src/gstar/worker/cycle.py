@@ -178,6 +178,22 @@ def run_cycle(
             except Exception as exc:
                 rep.steps["procedures"] = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # Phase H5 — G → Qdrant 파생 뷰 emit (embedder 있을 때만)
+        if embedder is not None and os.environ.get("QDRANT_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}:
+            try:
+                from gstar.mirror.qdrant_view import mirror_to_qdrant
+                mirror_limit = int(os.environ.get("QDRANT_MIRROR_LIMIT", "1000"))
+                qres = mirror_to_qdrant(store, embedder, limit=mirror_limit)
+                rep.steps["qdrant_mirror"] = {
+                    "collection": qres.collection,
+                    "scanned": qres.scanned,
+                    "upserted": qres.upserted,
+                    "failed": qres.failed,
+                    "errors": qres.errors[:3],
+                }
+            except Exception as exc:
+                rep.steps["qdrant_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         rep.status = "success"
     except Exception as exc:
         rep.status = "failed"
