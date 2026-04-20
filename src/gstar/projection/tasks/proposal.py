@@ -27,6 +27,9 @@ from gstar.projection.template import (
 @register
 class ProposalTask(TaskDefinition):
     name = "proposal"
+    # proposal = top-down: plan → award → dev → 검증 실험
+    # idea~final-doc 는 계획 수립, award-to-dev/instruction/lab-note/lab-compare 는
+    # 수주 후 실행 단계. 네 stage 는 research 와 동명이나 순서·의미가 반대.
     stages = [
         "idea",
         "debate",
@@ -36,6 +39,11 @@ class ProposalTask(TaskDefinition):
         "experiment-plan",
         "proposal",
         "final-doc",
+        # top-down 실행 단계
+        "award-to-dev",     # 수주된 계획 → 개발 태스크/마일스톤 분해
+        "instruction",      # 개발팀 지시서 (개별 태스크 상세)
+        "lab-note",         # 개발·검증 실험 기록
+        "lab-compare",      # 실험 비교·최종 수용 판정
     ]
     entity_kinds = [
         EntityKind.PERSON,
@@ -59,6 +67,12 @@ class ProposalTask(TaskDefinition):
         "experiment-plan": STRUCTURE_7,
         "proposal": PROPOSAL_8,
         "final-doc": FINAL_DOC_8,
+        # top-down 실행 단계 — 기본 스키마는 STRUCTURE_7 재사용.
+        # 실제 사용 시 양식 또는 사용자 지시로 세분화 권장.
+        "award-to-dev":   STRUCTURE_7,
+        "instruction":    STRUCTURE_7,
+        "lab-note":       IDEA_3,
+        "lab-compare":    STRUCTURE_7,
     }
 
     def stage_role(self, stage: str) -> StageRole:

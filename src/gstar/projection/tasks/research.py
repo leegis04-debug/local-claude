@@ -55,16 +55,25 @@ def _lab_tracker_hook(project_dir: str, **kwargs: Any) -> dict:
 @register
 class ResearchTask(TaskDefinition):
     name = "research"
+    # research = bottom-up: instruction → 실험(lab-note/lab-compare) → 가설·구조
+    # → 최종 산출물(논문·특허·모델·시스템 = final-doc/award-to-dev).
+    # proposal 트랙과 stage 이름은 같으나 실행 순서·의미가 반대 (top-down vs bottom-up).
     stages = [
+        # 지시·계획 (선행)
+        "instruction",      # Jira 티켓·연구지시서 — 실행 시작점
         "idea",
         "debate",
         "structure",
         "spec",
         "risk-check",
         "experiment-plan",
-        "proposal",
-        "final-doc",
-        "lab-note",
+        # 실험 (핵심 중간)
+        "lab-note",         # 개별 실험 기록
+        "lab-compare",      # 실험 비교 분석
+        # 산출물 (후행)
+        "proposal",         # 논문·특허 draft
+        "final-doc",        # 논문·특허·모델·시스템 최종본
+        "award-to-dev",     # 상용화·시스템 이관·배포
     ]
     entity_kinds = [
         EntityKind.PERSON,
@@ -83,15 +92,18 @@ class ResearchTask(TaskDefinition):
     default_ollama_model = "gemma4:26b-a4b-it-q4_K_M"
 
     _SCHEMAS: dict[str, list[SectionSpec]] = {
-        "idea": IDEA_3,
-        "debate": DEBATE_4,
-        "structure": STRUCTURE_7,
-        "spec": SPEC_8,
-        "risk-check": IDEA_3,
+        "instruction":    STRUCTURE_7,
+        "idea":           IDEA_3,
+        "debate":         DEBATE_4,
+        "structure":      STRUCTURE_7,
+        "spec":           SPEC_8,
+        "risk-check":     IDEA_3,
         "experiment-plan": STRUCTURE_7,
-        "proposal": RESEARCH_9,
-        "final-doc": FINAL_DOC_8,
-        "lab-note": RESEARCH_9,
+        "lab-note":       RESEARCH_9,
+        "lab-compare":    STRUCTURE_7,
+        "proposal":       RESEARCH_9,
+        "final-doc":      FINAL_DOC_8,
+        "award-to-dev":   STRUCTURE_7,
     }
 
     def stage_role(self, stage: str) -> StageRole:

@@ -415,9 +415,13 @@ def verify_cmd(output: Path = typer.Argument(..., exists=True)) -> None:
 
 _STAGE_SEQ_MAP = {
     "input": "00",
+    # 공통 (proposal·research 동명)
     "idea": "01", "debate": "02", "structure": "03", "spec": "04",
     "risk-check": "05", "experiment-plan": "06", "proposal": "07",
-    "final-doc": "08", "lab-note": "09",
+    "final-doc": "08",
+    # research bottom-up 실험 / 지시 — proposal 트랙에서도 동일 번호로 공유
+    "lab-note": "09", "lab-compare": "10", "award-to-dev": "11", "instruction": "12",
+    # document·coding 트랙
     "outline": "01", "draft": "02", "revise": "03", "finalize": "04",
     "explore": "01", "plan": "02", "implement": "03", "test": "04", "review": "05",
 }
@@ -474,9 +478,23 @@ def _should_answer_question(q, stage: str) -> bool:
     if is_boilerplate(q.title):
         return False
 
+    # stage 분류 (해상도 기준):
+    #  coarse : 상위 heading 만 (굵은 주제 탐색)
+    #  label  : + table_row_label (실질 질문 라벨)
+    #  fine   : + table_header (셀 단위 최대 해상도)
     coarse_stages = {"idea", "debate"}
-    label_stages = {"structure", "risk-check"}
-    fine_stages = {"spec", "proposal", "experiment-plan", "final-doc"}
+    label_stages = {
+        "structure", "risk-check",
+        # bottom-up 흐름: lab-note 는 개별 실험 기록이라 label 까지
+        "lab-note",
+    }
+    fine_stages = {
+        "spec", "proposal", "experiment-plan", "final-doc",
+        # 신규 stage — 상세 기술/지시 필요
+        "lab-compare",    # 메트릭 셀 하나하나가 질문
+        "award-to-dev",   # 태스크·마일스톤 셀 단위
+        "instruction",    # 지시 요건 셀 단위
+    }
 
     if stage in coarse_stages:
         return q.type == "heading" and q.depth <= 3

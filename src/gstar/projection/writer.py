@@ -144,6 +144,7 @@ def write(
     project_dir = Path(project_dir)
     seq_map = {
         "input": "00",
+        # 공통 계획·분석 (proposal·research 동명 stage)
         "idea": "01",
         "debate": "02",
         "structure": "03",
@@ -152,11 +153,17 @@ def write(
         "experiment-plan": "06",
         "proposal": "07",
         "final-doc": "08",
+        # research: bottom-up 실험 & 지시 — 별도 번호
         "lab-note": "09",
+        "lab-compare": "10",
+        "award-to-dev": "11",
+        "instruction": "12",
+        # document 트랙
         "outline": "01",
         "draft": "02",
         "revise": "03",
         "finalize": "04",
+        # coding 트랙
         "explore": "01",
         "plan": "02",
         "implement": "03",
