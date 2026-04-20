@@ -13,3 +13,12 @@ state.json.tmp
 state.json.corrupt
 .memory/
 .perf/
+01-idea/
+02-debate/
+03-structure/
+04-spec/
+05-risk-check/
+06-experiment-plan/
+07-proposal/
+08-final-doc/
+09-lab-note/

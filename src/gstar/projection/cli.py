@@ -532,13 +532,41 @@ def _run_mode_e(
         from gstar.forms.question_tree import load_questions
         tree = load_questions(form_md)
         candidates = [q for q in tree.nodes if _should_answer_question(q, stage)]
+
+        # 랭킹 (기본 on — limit 주는 경우 상위부터 선택)
+        rank_mode = os.environ.get("GP_QUESTION_RANK", "on").lower() in {"on", "1", "true"}
+        rank_rag = os.environ.get("GP_QUESTION_RANK_RAG", "off").lower() in {"on", "1", "true"}
+        ranking_report = None
+        if rank_mode and candidates:
+            from gstar.forms.ranking import rank_questions, rank_with_rag
+            id_to_q = {q.id: q for q in candidates}
+            if rank_rag:
+                gurl = os.environ.get("GSTAR_SERVER_URL", "http://100.79.251.53:9999")
+                ranked = rank_with_rag(candidates, stage, g_url=gurl)
+            else:
+                ranked = rank_questions(candidates, stage)
+            candidates = [id_to_q[r.q_id] for r in ranked]
+            ranking_report = [
+                {"q_id": r.q_id, "score": r.score, "title": r.title[:70],
+                 "type": r.type, "breakdown": r.breakdown}
+                for r in ranked
+            ]
+
         limit = int(os.environ.get("GP_QUESTION_LIMIT", "0") or "0")
         if limit > 0:
             candidates = candidates[:limit]
         typer.echo(
             f"[question-mode] form={form_md.name} "
-            f"total={len(tree)} matched={len(candidates)} stage={stage}"
+            f"total={len(tree)} matched={len(candidates)} stage={stage} "
+            f"rank={'on' if rank_mode else 'off'}{'(+rag)' if rank_rag else ''}"
         )
+        if ranking_report is not None:
+            # 랭킹 로그 저장
+            import json as _json_rank
+            (out_dir / "ranking.json").write_text(
+                _json_rank.dumps(ranking_report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         all_texts: list[str] = []
         reports: list[dict] = []

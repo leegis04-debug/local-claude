@@ -34,6 +34,9 @@ while (( $# > 0 )); do
     --limit)       limit="$2"; shift 2 ;;
     --limit=*)     limit="${1#--limit=}"; shift ;;
     --no-form)     no_form="on"; shift ;;
+    --rank)        rank="on"; shift ;;
+    --no-rank)     rank="off"; shift ;;
+    --rank-rag)    rank="on"; rank_rag="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gjw — proposal 트랙 (idea|debate|structure|spec|risk-check|experiment-plan|proposal|final-doc)
@@ -41,18 +44,23 @@ gjw — proposal 트랙 (idea|debate|structure|spec|risk-check|experiment-plan|p
                            [--coherence strict|loose|off] [--model <ollama>]
                            [--form <form-id>] [--panel | --no-panel]
                            [--limit N] [--no-form]
+                           [--rank | --no-rank | --rank-rag]
 
-  --panel      stage 별 4~5 persona 패널 활성. svrr 에서 draft→L1→integrator.
-               섹션당 Ollama 호출 수 3~5배.
+  --panel      stage 별 4~5 persona 패널. svrr 에서 draft→L1→integrator.
   --no-panel   GP_PERSONAS=off 강제
-  --limit N    per-question 모드에서 처음 N개 질문만 (빠른 반복·디버그·Claude Code timeout 회피)
-  --no-form    양식 질문 트리 사용 중지 — legacy 단일 섹션 모드 (GP_FORM_QUESTIONS=off)
+  --limit N    per-question 처음 N개만 (timeout 회피)
+  --no-form    양식 무시, legacy 단일 섹션
+  --rank       질문 중요도 heuristic 랭킹 후 상위 N 선택 (기본 on)
+  --no-rank    원문 순서 유지
+  --rank-rag   heuristic + G /search/fused 관련성까지 고려 (정확도↑, 속도↓)
 
 예시:
-  gjw idea "토픽" --mode svrr                      # 양식 기반 질문 전부 (수십분)
-  gjw idea "토픽" --mode svrr --limit 5            # 앞 5개만 (빠른 확인)
-  gjw idea "토픽" --mode svrr --panel --limit 3   # 패널 + 3 질문
-  gjw idea "토픽" --mode svrr --no-form            # 양식 무시, 단일 섹션
+  gjw idea "토픽" --mode svrr                        # 전부 (수십분)
+  gjw idea "토픽" --mode svrr --limit 5              # 중요도 top 5
+  gjw idea "토픽" --mode svrr --limit 5 --no-rank    # 원문 앞 5개
+  gjw idea "토픽" --mode svrr --rank-rag --limit 10  # G 근거 가진 top 10
+  gjw idea "토픽" --mode svrr --panel --limit 3      # 패널+top 3
+  gjw idea "토픽" --mode svrr --no-form              # 양식 무시
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
@@ -74,6 +82,16 @@ fi
 # --no-form → GP_FORM_QUESTIONS=off
 if [ "${no_form:-}" = "on" ]; then
   export GP_FORM_QUESTIONS=off
+fi
+
+# --rank / --no-rank / --rank-rag
+if [ "${rank:-}" = "on" ]; then
+  export GP_QUESTION_RANK=on
+elif [ "${rank:-}" = "off" ]; then
+  export GP_QUESTION_RANK=off
+fi
+if [ "${rank_rag:-}" = "on" ]; then
+  export GP_QUESTION_RANK_RAG=on
 fi
 
 stage="${args[0]:-}"
