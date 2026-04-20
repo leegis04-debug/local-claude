@@ -538,13 +538,55 @@ def _run_mode_e(
     store = DuckStore(paths.db)
     gclient = gclient_from_env()
 
-    stage_dir = _resolve_stage_dir(project_dir, stage)
+    # Jira 연동 — GP_JIRA_KEY 있으면 티켓 메타를 user_input 에 prepend
+    jira_key = (os.environ.get("GP_JIRA_KEY") or "").strip()
+    if jira_key:
+        try:
+            from gstar.integrations.jira import (
+                get_issue, summarize_issue, summary_to_context_block,
+            )
+            issue = get_issue(jira_key)
+            summ = summarize_issue(issue)
+            context = summary_to_context_block(summ)
+            user_input = f"{context}\n\n---\n\n{user_input}".strip()
+            typer.echo(f"[jira] {jira_key}: {summ['summary'][:60]}")
+        except Exception as exc:
+            typer.echo(f"[jira] {jira_key} pull 실패: {type(exc).__name__}: {exc}")
+
+    # dev/ri/<KEY>/ 를 질문 source 로 사용 — GP_FROM_RI 또는 GP_JIRA_KEY 시
+    from_ri_key = (os.environ.get("GP_FROM_RI") or jira_key).strip()
+    ri_dir = (project_dir / "dev" / "ri" / from_ri_key) if from_ri_key else None
+
+    if ri_dir is not None and ri_dir.exists():
+        stage_dir = ri_dir
+    else:
+        stage_dir = _resolve_stage_dir(project_dir, stage)
     stage_dir.mkdir(parents=True, exist_ok=True)
     out_dir = stage_dir / f"_mode_{mode}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     use_questions = os.environ.get("GP_FORM_QUESTIONS", "on").lower() in {"on", "1", "true"}
-    form_md = _find_form_md(project_dir) if use_questions else None
+    # --from-ri 시 ri_dir 의 템플릿 md 들을 양식으로 사용
+    if ri_dir is not None and ri_dir.exists() and use_questions:
+        # ri_dir 안 md 들 중 stage 에 매칭되는 것 우선, 없으면 전체 합본 을 질문소스로
+        stage_md = next(
+            (p for p in sorted(ri_dir.glob("*.md"))
+             if stage.replace("-", "") in p.stem.replace("-", "")),
+            None,
+        )
+        if stage_md is None:
+            # fallback — 전체 ri 디렉터리의 md 를 합쳐 임시 양식 생성
+            combined = "\n\n".join(
+                p.read_text(encoding="utf-8")
+                for p in sorted(ri_dir.glob("*.md"))
+                if not p.name.startswith("_")
+            )
+            stage_md = ri_dir / "_combined_for_questions.md"
+            stage_md.write_text(combined, encoding="utf-8")
+        form_md = stage_md
+        typer.echo(f"[from-ri] {from_ri_key}: 질문 source={form_md.name}")
+    else:
+        form_md = _find_form_md(project_dir) if use_questions else None
 
     if form_md is not None:
         from gstar.forms.question_tree import load_questions

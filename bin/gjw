@@ -37,6 +37,10 @@ while (( $# > 0 )); do
     --rank)        rank="on"; shift ;;
     --no-rank)     rank="off"; shift ;;
     --rank-rag)    rank="on"; rank_rag="on"; shift ;;
+    --jira)        jira_key="$2"; shift 2 ;;
+    --jira=*)      jira_key="${1#--jira=}"; shift ;;
+    --from-ri)     from_ri="$2"; shift 2 ;;
+    --from-ri=*)   from_ri="${1#--from-ri=}"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gjw — proposal 트랙 (idea|debate|structure|spec|risk-check|experiment-plan|proposal|final-doc)
@@ -93,6 +97,8 @@ fi
 if [ "${rank_rag:-}" = "on" ]; then
   export GP_QUESTION_RANK_RAG=on
 fi
+if [ -n "${jira_key:-}" ]; then export GP_JIRA_KEY="$jira_key"; fi
+if [ -n "${from_ri:-}" ]; then export GP_FROM_RI="$from_ri"; fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gjw <stage> ..." >&2; exit 1; }
