@@ -33,16 +33,16 @@ while (( $# > 0 )); do
     --limit)       limit="$2"; shift 2 ;;
     --limit=*)     limit="${1#--limit=}"; shift ;;
     --no-form)     no_form="on"; shift ;;
+    --rank)        rank="on"; shift ;;
+    --no-rank)     rank="off"; shift ;;
+    --rank-rag)    rank="on"; rank_rag="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gdoc — 범용 문서 트랙 (outline|draft|revise|finalize)
 사용: gdoc <stage> "<input>" [--project <dir>] [--mode classic|sv|svr|svrr]
                               [--coherence strict|loose|off] [--model <ollama>]
                               [--panel | --no-panel] [--limit N] [--no-form]
-
-  --panel      persona 패널 활성
-  --limit N    per-question 처음 N개만
-  --no-form    양식 질문 트리 비활성
+                              [--rank | --no-rank | --rank-rag]
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
@@ -56,6 +56,9 @@ elif [ "$panel" = "off" ]; then
 fi
 if [ -n "${limit:-}" ]; then export GP_QUESTION_LIMIT="$limit"; fi
 if [ "${no_form:-}" = "on" ]; then export GP_FORM_QUESTIONS=off; fi
+if [ "${rank:-}" = "on" ]; then export GP_QUESTION_RANK=on
+elif [ "${rank:-}" = "off" ]; then export GP_QUESTION_RANK=off; fi
+if [ "${rank_rag:-}" = "on" ]; then export GP_QUESTION_RANK_RAG=on; fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gdoc <stage> ..." >&2; exit 1; }

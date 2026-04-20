@@ -33,6 +33,9 @@ while (( $# > 0 )); do
     --limit)       limit="$2"; shift 2 ;;
     --limit=*)     limit="${1#--limit=}"; shift ;;
     --no-form)     no_form="on"; shift ;;
+    --rank)        rank="on"; shift ;;
+    --no-rank)     rank="off"; shift ;;
+    --rank-rag)    rank="on"; rank_rag="on"; shift ;;
     --help|-h)
       cat >&2 <<'USAGE'
 gre — research 트랙 (idea|structure|spec|experiment-plan|proposal|final-doc|lab-note|...)
@@ -40,10 +43,13 @@ gre — research 트랙 (idea|structure|spec|experiment-plan|proposal|final-doc|
                            [--coherence strict|loose|off] [--model <ollama>]
                            [--form <form-id>] [--panel | --no-panel]
                            [--limit N] [--no-form]
+                           [--rank | --no-rank | --rank-rag]
 
-  --panel      persona 패널 활성. svrr 에서 draft→L1→integrator.
-  --limit N    per-question 모드에서 처음 N개만 (빠른 확인·timeout 회피)
-  --no-form    양식 질문 트리 비활성 (단일 섹션 모드)
+  --panel      persona 패널 활성
+  --limit N    per-question 처음 N개만
+  --no-form    양식 무시
+  --rank       중요도 랭킹 (기본 on)
+  --rank-rag   rank + G /search 관련성 반영
 USAGE
       exit 0 ;;
     *) args+=("$1"); shift ;;
@@ -57,6 +63,9 @@ elif [ "$panel" = "off" ]; then
 fi
 if [ -n "${limit:-}" ]; then export GP_QUESTION_LIMIT="$limit"; fi
 if [ "${no_form:-}" = "on" ]; then export GP_FORM_QUESTIONS=off; fi
+if [ "${rank:-}" = "on" ]; then export GP_QUESTION_RANK=on
+elif [ "${rank:-}" = "off" ]; then export GP_QUESTION_RANK=off; fi
+if [ "${rank_rag:-}" = "on" ]; then export GP_QUESTION_RANK_RAG=on; fi
 
 stage="${args[0]:-}"
 [ -z "$stage" ] && { echo "사용: gre <stage> ..." >&2; exit 1; }
