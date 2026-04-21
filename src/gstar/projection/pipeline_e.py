@@ -182,6 +182,171 @@ def _project_panel(proj_in, *, track_name: str, rep) -> ProjectorOutput:
         )
 
 
+# ---------- Stage C: 창발 질문 유출 + 웹 seed 재귀 루프 ----------
+
+
+def _emerged_questions(goal: str, facts: list[dict], max_q: int = 3) -> list[str]:
+    """Gemma E4B 로 fact 집합의 설명 안 된 간극을 채울 웹 검색 질문 N개 생성.
+
+    실패·빈 결과 시 [] 반환. 호출자는 루프 종료.
+    """
+    if not facts:
+        return []
+    from gstar.projection.selector_loop import selector_host
+    from gstar.selector.gemma_client import OllamaChatClient
+    client = OllamaChatClient(
+        host=selector_host(),
+        model=os.environ.get("SELECTOR_MODEL", "gemma4:e4b"),
+        timeout_s=60.0,
+        num_predict=400,
+        temperature=0.5,
+    )
+    facts_block = "\n".join(
+        f"- {(f.get('text') or '')[:180]}" for i, f in enumerate(facts[:20])
+    )
+    prompt = (
+        f"[목표] {goal}\n\n"
+        f"[이미 수집한 지식 {min(len(facts), 20)}개]\n{facts_block}\n\n"
+        "작업:\n"
+        "1) [목표] 문장을 단어·명사구로 쪼개, 각각이 [이미 수집한 지식]에 등장하는지 대조.\n"
+        "2) 등장 빈도가 0 이거나 부실한 키워드 = '빈 슬롯'. 빈 슬롯 우선 주목.\n"
+        f"3) 빈 슬롯을 채울 웹 검색 질의 {max_q}개 생성.\n\n"
+        "질의 규칙:\n"
+        "- 순수한 질의만 한 줄씩. **, `, 따옴표, 괄호, 콜론 금지.\n"
+        "- 이미 수집된 내용 재요약 금지. 새 정보를 찾는 것.\n"
+        "- 구체적 사례·제품명·기업명·수치·연도 중 하나 이상 포함.\n"
+        "- 8~40자. 한국어 검색 친화적.\n\n"
+        "예시 (별개 주제):\n"
+        "목표: 수소버스 연료전지 내구성\n"
+        "이미 수집: 수소연료전지 원리, 국내 버스 시범사업 개요\n"
+        "빈 슬롯: 내구성 (수명·성능 열화 데이터 전무)\n"
+        "출력:\n"
+        "1. 수소버스 연료전지 수명 실증 데이터\n"
+        "2. 저온 환경 연료전지 성능 열화 사례\n"
+        "3. 현대 수소버스 일렉시티 내구성 보고서\n\n"
+        "이제 위 [목표]·[이미 수집한 지식]에 동일하게 적용하여 출력만 생성:\n"
+    )
+    try:
+        out = client.judge(system="너는 지식 간극 분석·질의 생성 전문가다.", prompt=prompt)
+    except Exception:
+        return []
+    questions: list[str] = []
+    for line in out.splitlines():
+        m = re.match(r"^\s*\d+\.\s*(.+?)\s*$", line)
+        if m:
+            q = m.group(1).strip().strip("*").strip("`").strip('"').strip("'")
+            # markdown 강조 · 콜론 이후 괄호 등 제거
+            q = re.sub(r"\*+", "", q).strip()
+            q = re.sub(r":\s*\(.+\)$", "", q).strip()
+            if 8 <= len(q) <= 200:
+                questions.append(q)
+    return questions[:max_q]
+
+
+def _run_emergence_loop(
+    goal: str,
+    *,
+    gclient,
+    skwargs: dict,
+    rep: "PipelineResult",
+) -> SelectorResult:
+    """Stage C 재귀 seed 확장 루프.
+
+    반복:
+      1) run_selector → current facts
+      2) Gemma 가 fact 간극 기반 질의 N개 유출
+      3) 각 질의에 cache_first_web_search 실행 (Brave + G 역삽입)
+      4) run_selector 재호출 → 새 fact 반영된 결과
+      5) fact 수 증가 미미 or max_iter 도달 → 종료
+
+    env:
+      GP_EMERGENCE_MAX_ITER=2       — 루프 상한 (기본 2)
+      GP_EMERGENCE_QUESTIONS=3      — iter 당 질의 수 (기본 3)
+      GP_EMERGENCE_MIN_GAIN=3       — 종료 임계 fact 증가량 (기본 3)
+      GP_EMERGENCE_WEB_TOP_K=5      — 각 질의 웹검색 top-K (기본 5)
+    """
+    import asyncio
+    from gstar.enrich.g_cache import cache_first_web_search
+
+    max_iter = int(os.environ.get("GP_EMERGENCE_MAX_ITER", "2") or "2")
+    n_questions = int(os.environ.get("GP_EMERGENCE_QUESTIONS", "3") or "3")
+    min_gain = int(os.environ.get("GP_EMERGENCE_MIN_GAIN", "3") or "3")
+    web_top_k = int(os.environ.get("GP_EMERGENCE_WEB_TOP_K", "5") or "5")
+
+    sel = run_selector(goal, gclient=gclient, **skwargs)
+    prev_count = len(sel.final_facts)
+    rep.warnings.append(f"[emergence] iter 0: {prev_count} facts")
+    if prev_count == 0:
+        # seed 가 전무하면 web 만 돌려 초기 축적 (강제 fresh — 이미 부재 확인됨)
+        rep.warnings.append("[emergence] seed 0 → goal 직접 웹검색 1회 (force_web)")
+        try:
+            asyncio.run(cache_first_web_search(goal, top_k=web_top_k, force_web=True))
+        except Exception as exc:
+            rep.warnings.append(f"[emergence] goal 웹검색 실패: {exc}")
+        sel = run_selector(goal, gclient=gclient, **skwargs)
+        prev_count = len(sel.final_facts)
+        rep.warnings.append(f"[emergence] seed 보충 후: {prev_count} facts")
+        if prev_count == 0:
+            rep.warnings.append("[emergence] 보충 후에도 seed 0 → 종료")
+            return sel
+
+    # emergence 의 목적은 간극 채우기 → cache_first 가 "충분" 판단해 web skip 하면
+    # 간극을 절대 메울 수 없음. 기본 force_web=True 로 매번 웹 호출 강제.
+    # GP_EMERGENCE_CACHE_FIRST=on 으로 override 가능 (이미 축적된 주제 재실행 시).
+    force_web_default = os.environ.get("GP_EMERGENCE_CACHE_FIRST", "off").lower() not in {"on", "1", "true"}
+
+    for it in range(1, max_iter + 1):
+        questions = _emerged_questions(goal, sel.final_facts, max_q=n_questions)
+        if not questions:
+            rep.warnings.append(f"[emergence] iter {it}: 추가 질의 없음 → 종료")
+            break
+        rep.warnings.append(f"[emergence] iter {it} 질의 {len(questions)}개: {questions}")
+
+        total_ingested = 0
+        total_web_hits = 0
+        for q in questions:
+            try:
+                res = asyncio.run(
+                    cache_first_web_search(q, top_k=web_top_k, force_web=force_web_default)
+                )
+                total_ingested += int(getattr(res, "ingested", 0) or 0)
+                total_web_hits += int(getattr(res, "web_hits", 0) or 0)
+            except Exception as exc:
+                rep.warnings.append(f"[emergence] web_search 실패 '{q[:40]}': {type(exc).__name__}: {exc}")
+
+        rep.warnings.append(
+            f"[emergence] iter {it} 웹 hits={total_web_hits} · G 축적={total_ingested}"
+        )
+
+        new_sel = run_selector(goal, gclient=gclient, **skwargs)
+        new_count = len(new_sel.final_facts)
+        sel_gain = new_count - prev_count
+        rep.warnings.append(
+            f"[emergence] iter {it} 후 selector: {new_count} facts (sel_gain=+{sel_gain})"
+        )
+
+        sel = new_sel
+        # 종료 조건: Selector top_k 상한 때문에 sel_gain 이 0 나오더라도 G 에 실제
+        # ingest 된 fact 가 많으면 계속 진행 (다음 iter 에서 더 구체 질의가 기존
+        # top 을 밀어낼 기회). ingested >= min_gain * 20 을 보조 기준으로.
+        ingest_gain_threshold = min_gain * 20
+        sufficient_ingest = total_ingested >= ingest_gain_threshold
+        if sel_gain < min_gain and not sufficient_ingest:
+            rep.warnings.append(
+                f"[emergence] iter {it}: sel_gain {sel_gain}<{min_gain} AND "
+                f"ingest {total_ingested}<{ingest_gain_threshold} → 종료"
+            )
+            break
+        if sel_gain < min_gain and sufficient_ingest:
+            rep.warnings.append(
+                f"[emergence] iter {it}: sel_gain 은 낮지만 ingest {total_ingested}"
+                f"≥{ingest_gain_threshold} 로 계속"
+            )
+        prev_count = new_count
+
+    return sel
+
+
 @dataclass
 class PipelineResult:
     mode: str
@@ -245,9 +410,13 @@ def run_pipeline(
     mode = mode or os.environ.get("PROJECTION_MODE", "svrr")
     rep = PipelineResult(mode=mode, goal=goal, track=track, section=section.name)
 
-    # --- Selector ---
+    # --- Selector (+ Stage C 창발 루프 옵션) ---
     skwargs = selector_kwargs or {}
-    sel = run_selector(goal, gclient=gclient, **skwargs)
+    use_emergence = os.environ.get("GP_EMERGENCE", "off").lower() in {"on", "1", "true"}
+    if use_emergence:
+        sel = _run_emergence_loop(goal, gclient=gclient, skwargs=skwargs, rep=rep)
+    else:
+        sel = run_selector(goal, gclient=gclient, **skwargs)
     rep.selector = sel
     if not sel.final_facts:
         rep.warnings.append("Selector 가 빈 fact 집합을 반환 — Projector skip")
