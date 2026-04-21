@@ -264,6 +264,11 @@ def _run_emergence_loop(
       GP_EMERGENCE_QUESTIONS=3      — iter 당 질의 수 (기본 3)
       GP_EMERGENCE_MIN_GAIN=3       — 종료 임계 fact 증가량 (기본 3)
       GP_EMERGENCE_WEB_TOP_K=5      — 각 질의 웹검색 top-K (기본 5)
+      GP_EMERGENCE_TOP_K=40         — Selector final_facts 상한 (기본 40, vs
+                                       기본 20). 새 web fact 가 기존 top 에 진입할
+                                       헤드룸 확보
+      GP_EMERGENCE_CANDIDATE_K=160  — G fused_search 초기 후보 수 (기본 160,
+                                       vs 기본 80). 더 넓은 pool 에서 관련 필터
     """
     import asyncio
     from gstar.enrich.g_cache import cache_first_web_search
@@ -273,9 +278,24 @@ def _run_emergence_loop(
     min_gain = int(os.environ.get("GP_EMERGENCE_MIN_GAIN", "3") or "3")
     web_top_k = int(os.environ.get("GP_EMERGENCE_WEB_TOP_K", "5") or "5")
 
-    sel = run_selector(goal, gclient=gclient, **skwargs)
+    # Selector pool 확대 — emergence 는 새 web fact 가 top 에 진입할 헤드룸 필요.
+    # 호출자가 이미 skwargs 에 top_k_final/candidate_k 명시하면 그걸 존중.
+    em_skwargs = dict(skwargs)
+    em_skwargs.setdefault(
+        "top_k_final",
+        int(os.environ.get("GP_EMERGENCE_TOP_K", "40") or "40"),
+    )
+    em_skwargs.setdefault(
+        "candidate_k",
+        int(os.environ.get("GP_EMERGENCE_CANDIDATE_K", "160") or "160"),
+    )
+
+    sel = run_selector(goal, gclient=gclient, **em_skwargs)
     prev_count = len(sel.final_facts)
-    rep.warnings.append(f"[emergence] iter 0: {prev_count} facts")
+    rep.warnings.append(
+        f"[emergence] iter 0: {prev_count} facts "
+        f"(top_k={em_skwargs['top_k_final']} cand={em_skwargs['candidate_k']})"
+    )
     if prev_count == 0:
         # seed 가 전무하면 web 만 돌려 초기 축적 (강제 fresh — 이미 부재 확인됨)
         rep.warnings.append("[emergence] seed 0 → goal 직접 웹검색 1회 (force_web)")
@@ -283,7 +303,7 @@ def _run_emergence_loop(
             asyncio.run(cache_first_web_search(goal, top_k=web_top_k, force_web=True))
         except Exception as exc:
             rep.warnings.append(f"[emergence] goal 웹검색 실패: {exc}")
-        sel = run_selector(goal, gclient=gclient, **skwargs)
+        sel = run_selector(goal, gclient=gclient, **em_skwargs)
         prev_count = len(sel.final_facts)
         rep.warnings.append(f"[emergence] seed 보충 후: {prev_count} facts")
         if prev_count == 0:
@@ -318,7 +338,7 @@ def _run_emergence_loop(
             f"[emergence] iter {it} 웹 hits={total_web_hits} · G 축적={total_ingested}"
         )
 
-        new_sel = run_selector(goal, gclient=gclient, **skwargs)
+        new_sel = run_selector(goal, gclient=gclient, **em_skwargs)
         new_count = len(new_sel.final_facts)
         sel_gain = new_count - prev_count
         rep.warnings.append(
