@@ -15,12 +15,69 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from gstar.projection.projector import ProjectionInput, ProjectorOutput, SectionSpec, project_section
 from gstar.projection.reinforce import ReinforceResult, reinforce_to_gateway
 from gstar.projection.selector_loop import SelectorResult, run_selector
+
+
+# ---------- Stage B(3): 실시간 테마 그룹핑 ----------
+
+
+def _theme_labels(goal: str, facts: list[dict], max_themes: int = 4) -> list[str]:
+    """Gemma E4B 로 facts 를 2~4 테마로 분류해 라벨 리스트 반환.
+
+    실패 시 빈 리스트 (호출자는 단일 호출 폴백). Projector 프롬프트 앞에 scaffold
+    (## 1. <라벨1> ## 2. <라벨2>) 로 주입되어 평면 기술을 테마별 구조로 승격.
+    """
+    if len(facts) < 4:
+        return []
+    from gstar.projection.selector_loop import selector_host
+    from gstar.selector.gemma_client import OllamaChatClient
+    client = OllamaChatClient(
+        host=selector_host(),
+        model=os.environ.get("SELECTOR_MODEL", "gemma4:e4b"),
+        timeout_s=45.0,
+        num_predict=200,
+        temperature=0.2,
+    )
+    facts_block = "\n".join(
+        f"[{i}] {(f.get('text') or '')[:180]}" for i, f in enumerate(facts[:30])
+    )
+    prompt = (
+        f"[목표] {goal}\n\n"
+        f"[지식 조각 {min(len(facts),30)}개]\n{facts_block}\n\n"
+        f"위 조각들을 {max_themes}개 이하 테마로 분류하고, 테마 라벨만 한 줄씩 나열.\n"
+        "형식 (정확히 준수):\n1. <라벨 1>\n2. <라벨 2>\n...\n"
+        "라벨은 명사구 (2~20자)."
+    )
+    try:
+        out = client.judge(system="너는 지식 조각 분류 전문가다.", prompt=prompt)
+    except Exception:
+        return []
+    labels: list[str] = []
+    for line in out.splitlines():
+        m = re.match(r"^\s*\d+\.\s*(.+?)\s*$", line)
+        if m:
+            lab = m.group(1).strip().strip("*").strip("`").strip()
+            if 2 <= len(lab) <= 30:
+                labels.append(lab)
+    return labels[:max_themes]
+
+
+def _with_theme_scaffold(section: SectionSpec, labels: list[str]) -> SectionSpec:
+    """SectionSpec.instruction 에 테마 scaffold 를 prepend. 원본 불변."""
+    scaffold = "[응답 구조 — 아래 테마별로 섹션 구성]\n" + "\n".join(
+        f"## {i+1}. {lab}" for i, lab in enumerate(labels)
+    )
+    return SectionSpec(
+        name=section.name,
+        instruction=f"{scaffold}\n\n{section.instruction}",
+        target_tokens=section.target_tokens,
+    )
 from gstar.projection.verifier import (
     VerificationReport,
     apply_trust_deltas,
@@ -196,8 +253,21 @@ def run_pipeline(
         rep.warnings.append("Selector 가 빈 fact 집합을 반환 — Projector skip")
         return rep
 
+    # --- Stage B(3): 실시간 테마 그룹핑 ---
+    # Selector 결과를 Gemma E4B 로 2~4 테마 분류 → Projector 프롬프트에 scaffold 주입.
+    # 평면 기술을 테마별 구조(## 1. <라벨> ...)로 승격. `GP_THEME_GROUP=on` 에만 활성.
+    section_for_proj = section
+    use_theme = os.environ.get("GP_THEME_GROUP", "off").lower() in {"on", "1", "true"}
+    if use_theme:
+        labels = _theme_labels(goal, sel.final_facts)
+        if labels:
+            section_for_proj = _with_theme_scaffold(section, labels)
+            rep.warnings.append(f"[theme] {len(labels)}개 테마: {labels}")
+        else:
+            rep.warnings.append("[theme] 테마 분류 실패 또는 fact<4 → scaffold 건너뜀")
+
     # --- Projector ---
-    proj_in = ProjectionInput(goal=goal, track=track, facts=sel.final_facts, section=section)
+    proj_in = ProjectionInput(goal=goal, track=track, facts=sel.final_facts, section=section_for_proj)
     use_panel = os.environ.get("GP_PERSONAS", "off").lower() in {"on", "1", "true"}
     if use_panel:
         proj_out = _project_panel(proj_in, track_name=track, rep=rep)
