@@ -44,18 +44,42 @@ def _from_utc_naive(ts: datetime | None) -> datetime | None:
 
 
 class DuckStore:
-    """단일 DuckDB 파일 래퍼. DuckDB 기본 connection 은 thread-safe 하지 않으므로
-    FastAPI threadpool 에서 공유 시 `Attempted to dereference unique_ptr that is NULL!`
-    같은 internal error 가 발생. `self.lock` 을 통해 모든 쿼리를 직렬화한다.
-    외부에서 `store.conn.execute` 를 직접 호출하는 모듈(entity/linker 등)은
-    `with store.lock:` 으로 감싸야 안전."""
+    """단일 DuckDB 파일 래퍼.
+
+    동시성 모델:
+    - `self.conn` — 단일 writer connection. 쓰기 경로는 `with self.lock:` 으로 직렬화.
+    - `self._read_conn()` — 쓰레드-로컬 read-only connection. FastAPI threadpool 에서
+      여러 쓰레드가 동시에 /search 요청을 받을 때 각자 독립 커서를 쓰도록 분리.
+      DuckDB 단일 connection 의 pending cursor 가 다른 쓰레드 execute 와 충돌해
+      `Attempting to execute an unsuccessful or closed pending query result` 를 띄우던
+      문제(gstar/gravity 경로)를 해결한다.
+
+    외부에서 `store.conn.execute` 를 직접 호출하는 모듈(entity/linker 등)은 writer
+    경로이므로 `with store.lock:` 으로 감싸야 안전.
+    """
 
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(str(self.db_path))
         self.lock = threading.RLock()
+        self._tls = threading.local()
         self._migrate()
+
+    def _read_conn(self) -> "duckdb.DuckDBPyConnection":
+        """쓰레드별 독립 cursor. FastAPI threadpool 에서 /search 동시 read 가
+        `self.conn` 단일 커서를 공유하다 race 로 크래시하던 것을 방지한다.
+
+        `self.conn.cursor()` 는 같은 DB connection context 안에서 독립적인
+        execute/fetch 상태를 가진 핸들을 반환한다. 별도 `duckdb.connect(path,
+        read_only=True)` 는 DuckDB 의 "same file different configuration"
+        제약으로 write connection 과 공존 불가이므로 사용하지 않는다.
+        """
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            conn = self.conn.cursor()
+            self._tls.conn = conn
+        return conn
 
     def _migrate(self) -> None:
         ddl = _MIGRATIONS.read_text(encoding="utf-8")
@@ -156,15 +180,32 @@ class DuckStore:
             )
 
     def get_node(self, node_id: str) -> Node | None:
-        with self.lock:
-            try:
-                row = self.conn.execute(
-                    f"SELECT {self._NODE_COLS} FROM node WHERE id = ?",
-                    [node_id],
-                ).fetchone()
-            except duckdb.InternalException:
-                return None
+        try:
+            row = self._read_conn().execute(
+                f"SELECT {self._NODE_COLS} FROM node WHERE id = ?",
+                [node_id],
+            ).fetchone()
+        except duckdb.InternalException:
+            return None
         return _row_to_node(row) if row else None
+
+    def get_nodes_many(self, node_ids: list[str]) -> dict[str, Node]:
+        """`get_node` 의 batch 버전. compute_gravity 의 후보 N개 fetch 를
+        1회 쿼리로 합친다. 존재하지 않는 id 는 결과 dict 에 key 없음."""
+        if not node_ids:
+            return {}
+        uniq = list(set(node_ids))
+        placeholders = ",".join(["?"] * len(uniq))
+        sql = f"SELECT {self._NODE_COLS} FROM node WHERE id IN ({placeholders})"
+        try:
+            rows = self._read_conn().execute(sql, uniq).fetchall()
+        except duckdb.InternalException:
+            return {}
+        out: dict[str, Node] = {}
+        for r in rows:
+            n = _row_to_node(r)
+            out[n.id] = n
+        return out
 
     def list_nodes(
         self,
@@ -186,20 +227,19 @@ class DuckStore:
         sql += " ORDER BY created_at, id"
         if limit:
             sql += f" LIMIT {int(limit)}"
-        rows = self.conn.execute(sql, params).fetchall()
+        rows = self._read_conn().execute(sql, params).fetchall()
         return [_row_to_node(r) for r in rows]
 
     def count_nodes(self) -> int:
-        with self.lock:
-            try:
-                row = self.conn.execute("SELECT COUNT(*) FROM node").fetchone()
-            except duckdb.InternalException:
-                return -1
+        try:
+            row = self._read_conn().execute("SELECT COUNT(*) FROM node").fetchone()
+        except duckdb.InternalException:
+            return -1
         return int(row[0]) if row else 0
 
     def nodes_by_namespace(self, namespace: str) -> list[Node]:
         """verify_chain 용. created_at, id 순 오름차순."""
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             f"SELECT {self._NODE_COLS} FROM node WHERE source_namespace = ? "
             "ORDER BY created_at, id",
             [namespace],
@@ -243,20 +283,48 @@ class DuckStore:
 
     def edges_of(self, node_id: str) -> list[Edge]:
         """해당 노드를 src 또는 dst 로 포함하는 모든 엣지."""
-        with self.lock:
-            try:
-                rows = self.conn.execute(
-                    "SELECT id, src, dst, kind, weight, evidence_json, created_at "
-                    "FROM edge WHERE src = ? OR dst = ?",
-                    [node_id, node_id],
-                ).fetchall()
-            except duckdb.InternalException:
-                return []
+        try:
+            rows = self._read_conn().execute(
+                "SELECT id, src, dst, kind, weight, evidence_json, created_at "
+                "FROM edge WHERE src = ? OR dst = ?",
+                [node_id, node_id],
+            ).fetchall()
+        except duckdb.InternalException:
+            return []
         return [_row_to_edge(r) for r in rows]
+
+    def edges_of_many(self, node_ids: list[str]) -> dict[str, list[Edge]]:
+        """`edges_of` 의 batch 버전. 여러 노드의 엣지를 한 번의 쿼리로 가져와
+        compute_gravity 의 N 회 DB 왕복을 1 회로 줄인다.
+
+        반환: {node_id: [edge, ...]}. 입력에 없는 id 는 key 없음. 방향 무관 —
+        한 edge 가 `src`/`dst` 양쪽에 매칭되는 경우 양쪽 key 의 리스트에 들어간다
+        (`edges_of` 와 동일 동작)."""
+        if not node_ids:
+            return {}
+        uniq = list(set(node_ids))
+        placeholders = ",".join(["?"] * len(uniq))
+        sql = (
+            "SELECT id, src, dst, kind, weight, evidence_json, created_at "
+            f"FROM edge WHERE src IN ({placeholders}) OR dst IN ({placeholders})"
+        )
+        try:
+            rows = self._read_conn().execute(sql, uniq + uniq).fetchall()
+        except duckdb.InternalException:
+            return {}
+        id_set = set(uniq)
+        result: dict[str, list[Edge]] = {nid: [] for nid in uniq}
+        for r in rows:
+            edge = _row_to_edge(r)
+            if edge.src in id_set:
+                result[edge.src].append(edge)
+            if edge.dst in id_set and edge.dst != edge.src:
+                result[edge.dst].append(edge)
+        return result
 
     def degree(self, node_id: str) -> int:
         """연결선 수. 3연결까지 안정, 4부터 창발."""
-        row = self.conn.execute(
+        row = self._read_conn().execute(
             "SELECT COUNT(*) FROM edge WHERE src = ? OR dst = ?",
             [node_id, node_id],
         ).fetchone()
@@ -271,7 +339,7 @@ class DuckStore:
         )
 
     def get_goal(self, goal_id: str) -> Goal | None:
-        row = self.conn.execute(
+        row = self._read_conn().execute(
             "SELECT id, text, kind, created_at FROM goal WHERE id = ?",
             [goal_id],
         ).fetchone()
@@ -280,7 +348,7 @@ class DuckStore:
         return Goal(id=row[0], text=row[1], kind=row[2], created_at=row[3])
 
     def list_goals(self) -> list[Goal]:
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             "SELECT id, text, kind, created_at FROM goal ORDER BY created_at"
         ).fetchall()
         return [Goal(id=r[0], text=r[1], kind=r[2], created_at=r[3]) for r in rows]
@@ -319,7 +387,7 @@ class DuckStore:
         )
 
     def clusters_for_goal(self, goal_id: str) -> list[Cluster]:
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             f"SELECT {self._CLUSTER_COLS} FROM cluster WHERE goal_id = ? "
             "ORDER BY cycle DESC, stability_score DESC",
             [goal_id],
@@ -327,14 +395,14 @@ class DuckStore:
         return [_row_to_cluster(r) for r in rows]
 
     def get_cluster(self, cluster_id: str) -> Cluster | None:
-        row = self.conn.execute(
+        row = self._read_conn().execute(
             f"SELECT {self._CLUSTER_COLS} FROM cluster WHERE id = ?",
             [cluster_id],
         ).fetchone()
         return _row_to_cluster(row) if row else None
 
     def cluster_members(self, cluster_id: str) -> list[tuple[str, float]]:
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             "SELECT node_id, gravity FROM cluster_member "
             "WHERE cluster_id = ? ORDER BY gravity DESC",
             [cluster_id],
@@ -359,7 +427,7 @@ class DuckStore:
         )
 
     def emergence_for_goal(self, goal_id: str) -> list[EmergenceEvent]:
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             "SELECT id, goal_id, trigger_node_id, connected_json, new_node_candidate, created_at "
             "FROM emergence_event WHERE goal_id = ? ORDER BY created_at",
             [goal_id],
@@ -392,13 +460,42 @@ class DuckStore:
             )
 
     def repeat_selection_rate(self, goal_id: str, node_id: str, last_n: int = 5) -> float:
-        row = self.conn.execute(
+        row = self._read_conn().execute(
             "SELECT AVG(CASE WHEN kept THEN 1.0 ELSE 0.0 END) "
             "FROM (SELECT kept FROM selection_log "
             "      WHERE goal_id = ? AND node_id = ? ORDER BY cycle DESC LIMIT ?)",
             [goal_id, node_id, last_n],
         ).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
+
+    def repeat_selection_rate_many(
+        self, goal_id: str, node_ids: list[str], last_n: int = 5
+    ) -> dict[str, float]:
+        """`repeat_selection_rate` 의 batch 버전. compute_gravity 가 후보 N개에
+        대해 각각 호출하던 것을 한 번의 window-function 쿼리로 합쳐 DB 왕복을 제거.
+
+        반환: {node_id: rate}. selection_log 에 기록이 없는 node 는 0.0."""
+        if not node_ids:
+            return {}
+        uniq = list(set(node_ids))
+        placeholders = ",".join(["?"] * len(uniq))
+        sql = (
+            "SELECT node_id, AVG(CASE WHEN kept THEN 1.0 ELSE 0.0 END) "
+            "FROM ("
+            "  SELECT node_id, kept, "
+            "         ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY cycle DESC) AS rn "
+            f"  FROM selection_log WHERE goal_id = ? AND node_id IN ({placeholders})"
+            ") WHERE rn <= ? GROUP BY node_id"
+        )
+        params: list[Any] = [goal_id] + uniq + [last_n]
+        try:
+            rows = self._read_conn().execute(sql, params).fetchall()
+        except duckdb.InternalException:
+            return {nid: 0.0 for nid in uniq}
+        out: dict[str, float] = {nid: 0.0 for nid in uniq}
+        for nid, avg in rows:
+            out[nid] = float(avg) if avg is not None else 0.0
+        return out
 
     # ---------- Namespace ----------
 
@@ -411,7 +508,7 @@ class DuckStore:
         )
 
     def list_namespaces(self) -> list[Namespace]:
-        rows = self.conn.execute(
+        rows = self._read_conn().execute(
             "SELECT name, description, is_active, created_at FROM namespace "
             "ORDER BY created_at"
         ).fetchall()
@@ -421,7 +518,7 @@ class DuckStore:
         ]
 
     def active_namespace(self) -> str:
-        row = self.conn.execute(
+        row = self._read_conn().execute(
             "SELECT name FROM namespace WHERE is_active = TRUE LIMIT 1"
         ).fetchone()
         return row[0] if row else "personal"

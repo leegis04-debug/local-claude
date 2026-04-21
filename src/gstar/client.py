@@ -246,9 +246,13 @@ class GClient:
 
 
 def from_env() -> GClient:
-    """환경변수 `GSTAR_SERVER_URL` 또는 ctx 활성 `gstar.server_url` 기반 생성."""
+    """환경변수 `GSTAR_SERVER_URL` 또는 ctx 활성 `gstar.server_url` 기반 생성.
+
+    `/search/fused` 같은 상위 엔드포인트는 G + Gateway 병합이라 응답 10~15s 걸릴 수 있어
+    env `GSTAR_TIMEOUT` 으로 override 가능 (기본 60s).
+    """
     import os
-    url = os.environ.get("GSTAR_SERVER_URL")
+    url = os.environ.get("GSTAR_SERVER_URL") or os.environ.get("G_URL")
     if not url:
         try:
             from ctx.config import Paths as CtxPaths
@@ -261,4 +265,8 @@ def from_env() -> GClient:
                     url = get_key_path(data, "gstar.server_url")
         except Exception:
             pass
-    return GClient(base_url=url or "http://100.79.251.53:9999")
+    try:
+        timeout = float(os.environ.get("GSTAR_TIMEOUT", "60"))
+    except ValueError:
+        timeout = 60.0
+    return GClient(base_url=url or "http://100.79.251.53:9999", timeout=timeout)

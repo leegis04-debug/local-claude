@@ -60,22 +60,25 @@ def compute_gravity(
     candidate_ids: set[str] = {nid for nid, _ in candidate_hits}
     candidate_ids |= seed_ids
 
-    # 인접 리스트 (adjacency) — candidate 집합 내 노드만.
+    # 인접 리스트 (adjacency) — 후보 집합의 엣지를 한 번의 쿼리로 모아온다
+    # (과거엔 후보마다 `edges_of` 를 따로 호출해 N회 DB 왕복 → batch 로 1회).
+    edge_map = store.edges_of_many(list(candidate_ids))
     adjacency: dict[str, set[str]] = {}
     for nid in list(candidate_ids):
-        edges = store.edges_of(nid)
+        edges = edge_map.get(nid, [])
         nbrs = {(e.dst if e.src == nid else e.src) for e in edges}
         adjacency[nid] = nbrs
         # centrality 계산용으로 이웃도 후보에 포함
         candidate_ids |= nbrs
 
+    # 3) 모든 후보의 노드·반복선택률도 batch 로 미리 가져온다.
+    node_map = store.get_nodes_many(list(candidate_ids))
+    stab_map = store.repeat_selection_rate_many(goal.id, list(candidate_ids))
+
     entries: list[GravityEntry] = []
 
     for nid in candidate_ids:
-        try:
-            node = store.get_node(nid)
-        except Exception:
-            continue
+        node = node_map.get(nid)
         if node is None or node.kind not in {"fact", "entity", "event", "state", "evidence"}:
             continue
 
@@ -90,7 +93,7 @@ def compute_gravity(
         cent = S.centrality(nid, seed_ids, adjacency)
         ver = S.version_validity(node)
         pur = S.purpose_fit(node, goal)
-        stab = S.repeat_selection(store, goal.id, nid)
+        stab = stab_map.get(nid, 0.0)
 
         total = (
             weights.w_rel * rel

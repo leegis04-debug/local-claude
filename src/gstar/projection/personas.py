@@ -50,7 +50,10 @@ _ROLE_PROMPTS: dict[str, str] = {
 
 _STAGE_PANEL: dict[str, list[str]] = {
     "idea": ["analyst", "strategist", "architect", "critic"],
-    "debate": [],
+    # debate: 원래 자유 토론은 섹션 스키마가 처리했으나 per-question 모드에서는
+    # 표·heading 단위 응답이라 panel 이 품질 향상에 필수. Claude jw skill mode B
+    # (writer/critic/analyst/strategist) 와 동일 구성.
+    "debate": ["analyst", "strategist", "critic", "architect"],
     "structure": ["analyst", "architect", "critic"],
     "spec": ["architect", "analyst", "critic"],
     "risk-check": ["critic", "analyst"],
@@ -61,7 +64,9 @@ _STAGE_PANEL: dict[str, list[str]] = {
 
 
 def panel_for(stage: str) -> list[PersonaSpec]:
-    roles = _STAGE_PANEL.get(stage, [])
+    # per-question 모드는 stage 를 "<base>::<q_id>" 로 넘김. base 만 뽑아 조회.
+    base = stage.split("::", 1)[0] if "::" in stage else stage
+    roles = _STAGE_PANEL.get(base, [])
     return [PersonaSpec(role=r, system_prompt=_ROLE_PROMPTS[r]) for r in roles]
 
 

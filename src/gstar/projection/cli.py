@@ -535,7 +535,15 @@ def _run_mode_e(
     from gstar.projection.projector import SectionSpec
 
     paths = Paths.load()
-    store = DuckStore(paths.db)
+    # GP_LOCAL_RETRIEVAL=off 이면 로컬 DB 쓰기(L2 trust 업데이트·reinforce) 건너뜀.
+    # 원격 전용 모드에선 로컬 UPDATE 가 불필요하고, 로컬 DB ART 인덱스 손상 시
+    # `UPDATE node` 가 duckdb FatalException (PRIMARY_node_0 append 실패) 를
+    # 일으켜 프로세스가 abort 되는 것을 회피.
+    _local_mode = os.environ.get("GP_LOCAL_RETRIEVAL", "on").lower()
+    if _local_mode in {"off", "0", "false"}:
+        store = None
+    else:
+        store = DuckStore(paths.db)
     gclient = gclient_from_env()
 
     # Jira 연동 — GP_JIRA_KEY 있으면 티켓 메타를 user_input 에 prepend
@@ -553,9 +561,15 @@ def _run_mode_e(
         except Exception as exc:
             typer.echo(f"[jira] {jira_key} pull 실패: {type(exc).__name__}: {exc}")
 
-    # dev/ri/<KEY>/ 를 질문 source 로 사용 — GP_FROM_RI 또는 GP_JIRA_KEY 시
+    # 09-bridge/dev/ri/<KEY>/ 를 질문 source 로 사용 — GP_FROM_RI 또는 GP_JIRA_KEY 시
+    # RI 산출물은 Jira 브리지 규약에 따라 09-bridge/dev/ri/ 아래로 통일.
+    # 레거시 dev/ri/<KEY>/ 도 fallback 으로 허용 (migration 기간 대비).
     from_ri_key = (os.environ.get("GP_FROM_RI") or jira_key).strip()
-    ri_dir = (project_dir / "dev" / "ri" / from_ri_key) if from_ri_key else None
+    _ri_candidates = [
+        project_dir / "09-bridge" / "dev" / "ri" / from_ri_key,
+        project_dir / "dev" / "ri" / from_ri_key,
+    ] if from_ri_key else []
+    ri_dir = next((p for p in _ri_candidates if p.exists()), None)
 
     if ri_dir is not None and ri_dir.exists():
         stage_dir = ri_dir

@@ -44,10 +44,18 @@ class OllamaChatClient:
     temperature: float = 0.1
 
     def judge(self, *, system: str, prompt: str) -> str:
-        """짧은 응답을 끌어내는 chat 호출. 실패 시 HTTPError 전파."""
+        """짧은 응답을 끌어내는 chat 호출. 실패 시 HTTPError 전파.
+
+        `think=false` 기본: Gemma 4 thinking 모델은 default 가 thinking on 이라
+        `message.content` 가 비어있고 `message.thinking` 에만 답이 쓰인다. Projector/
+        Selector 모두 최종 출력만 필요하므로 thinking 을 끈다. `GP_THINK=on` env 로
+        재활성화 가능 (디버그·복잡 추론 필요 시).
+        """
+        think = os.environ.get("GP_THINK", "off").lower() in {"on", "1", "true"}
         body = {
             "model": self.model,
             "stream": False,
+            "think": think,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
@@ -61,6 +69,10 @@ class OllamaChatClient:
         r.raise_for_status()
         data = r.json()
         msg = data.get("message", {}).get("content", "")
+        # fallback: 구버전 Ollama·모델이 think=false 를 무시해 content 가 비면
+        # thinking 을 fallback 으로 (완벽하진 않지만 완전 빈 응답보단 낫다).
+        if not msg.strip():
+            msg = data.get("message", {}).get("thinking", "") or msg
         return msg.strip()
 
 

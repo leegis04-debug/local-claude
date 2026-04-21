@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -46,8 +47,15 @@ def _project_panel(proj_in, *, track_name: str, rep) -> ProjectorOutput:
         rep.warnings.append(f"[panel] stage='{stage}' panel 미정의 → 단일 호출")
         return project_section(proj_in)
 
-    drafts: list[tuple[str, str]] = []  # (role, text)
-    for spec in panel:
+    # Phase P-Q3 — persona 패널 병렬 dispatch.
+    # 순차 for-loop 는 N persona × 단일 latency → 20분급. ThreadPoolExecutor 로
+    # Ollama/vLLM 에 동시 요청 → 백엔드의 parallel decode 활용 (Ollama 는
+    # OLLAMA_NUM_PARALLEL, vLLM 은 continuous batching). IO bound 이므로 GIL 무관.
+    _panel_workers = int(os.environ.get("GP_PANEL_WORKERS", str(len(panel))) or 1)
+    _panel_workers = max(1, min(_panel_workers, len(panel)))
+
+    def _run_persona(spec) -> tuple[str, str | None, str | None]:
+        """(role, text_or_none, error_or_none)."""
         persona_in = ProjectionInput(
             goal=proj_in.goal,
             track=proj_in.track,
@@ -61,11 +69,23 @@ def _project_panel(proj_in, *, track_name: str, rep) -> ProjectorOutput:
         try:
             out = project_section(persona_in)
             if out.text and "(Projector 호출 실패" not in out.text:
-                drafts.append((spec.role, out.text))
-            else:
-                rep.warnings.append(f"[panel] {spec.role} 드래프트 실패 — 제외")
+                return (spec.role, out.text, None)
+            return (spec.role, None, "빈 draft 또는 Projector 호출 실패")
         except Exception as exc:
-            rep.warnings.append(f"[panel] {spec.role}: {type(exc).__name__}: {exc}")
+            return (spec.role, None, f"{type(exc).__name__}: {exc}")
+
+    # 원래 panel 순서대로 drafts 보존 (integrator 프롬프트 안정성).
+    drafts: list[tuple[str, str]] = []
+    results_by_role: dict[str, tuple[str | None, str | None]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_panel_workers) as ex:
+        for role, text, err in ex.map(_run_persona, panel):
+            results_by_role[role] = (text, err)
+    for spec in panel:
+        text, err = results_by_role.get(spec.role, (None, "결과 누락"))
+        if text is not None:
+            drafts.append((spec.role, text))
+        else:
+            rep.warnings.append(f"[panel] {spec.role} 드래프트 실패 — {err}")
 
     if not drafts:
         rep.warnings.append("[panel] 모든 persona 실패 → 단일 호출 폴백")

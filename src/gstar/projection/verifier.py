@@ -6,8 +6,9 @@ L1 (rules, LLM 불필요, 빠름):
   - citation: 각 claim 에 source 링크
   - 최신성: fact.created_at 이 stale_after_days 이내
 
-L2 (RAG cross-check, 기존 Gateway 대조):
-  - 각 fact 의 text 를 Gateway /search/hybrid 에 질의
+L2 (RAG cross-check — G 우선, Gateway 폴백):
+  - primary: G `/search/fused` (use_g+use_gateway 자동 병합)
+  - fallback: Gateway `/search/hybrid` 직결 (G 응답이 비었을 때만)
   - top-3 결과 중 cosine ≥ RAG_CROSS_MIN 이거나 ROUGE-L ≥ 0.3 → pass
   - pass → trust_score += 1, verified_by 에 passage_id append
   - fail → trust_score -= 0.5
@@ -226,9 +227,38 @@ def _rouge_l_approx(a: str, b: str) -> float:
     return dp[la][lb] / max(la, lb)
 
 
+def _call_g_fused(
+    g_url: str, query: str, top_k: int = 3, timeout: float = 5.0
+) -> list[dict]:
+    """G `/search/fused` — 상위 응집 계층(G + Gateway 자동 병합). 인증 불필요.
+
+    응답은 root-level JSON 배열로 각 item 에 origin ∈ {g, gateway_qdrant, gateway_neo4j}.
+    """
+    body = json.dumps({
+        "query": query[:500],
+        "top_k": top_k,
+        "use_gateway": True,
+        "use_g": True,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{g_url.rstrip('/')}/search/fused",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return []
+    if isinstance(d, list):
+        return d
+    return d.get("items") or d.get("results") or d.get("hits") or []
+
+
 def _call_gateway_hybrid(
     gateway_url: str, token: str, query: str, top_k: int = 3, timeout: float = 5.0
 ) -> list[dict]:
+    """Gateway `/search/hybrid` 직결 — G 응답이 비었을 때만 fallback 으로 사용."""
     body = json.dumps({"query": query[:500], "top_k": top_k}).encode("utf-8")
     req = urllib.request.Request(
         f"{gateway_url.rstrip('/')}/search/hybrid",
@@ -247,20 +277,21 @@ def verify_l2_rag_cross(
     *,
     facts: list[dict[str, Any]],
     gateway_url: str | None = None,
+    g_url: str | None = None,
     token: str | None = None,
     min_rouge_l: float = 0.30,
     min_sim: float = 0.55,
     top_k: int = 3,
     timeout: float = 5.0,
 ) -> VerificationReport:
-    """각 fact 를 Gateway /search/hybrid 에 질의. top 결과와 비교해 trust 업데이트."""
+    """각 fact 를 G `/search/fused` 에 우선 질의 (G + Gateway 자동 병합).
+
+    G 가 빈 결과를 주거나 도달 불가일 때만 Gateway `/search/hybrid` 직결로 폴백.
+    """
     rep = VerificationReport(pass_=True)
     gurl = gateway_url or os.environ.get("GATEWAY_URL", "http://100.79.251.53:8000")
+    g_url = g_url or os.environ.get("G_URL", "http://100.79.251.53:9999")
     tok = token or os.environ.get("ASST_TOKEN", "")
-    if not tok:
-        rep.pass_ = False
-        rep.retry_hint = "ASST_TOKEN 없음 — L2 skip"
-        return rep
 
     pass_count = 0
     for f in facts:
@@ -268,14 +299,18 @@ def verify_l2_rag_cross(
         text = f.get("text", "")
         if not text.strip():
             continue
-        hits = _call_gateway_hybrid(gurl, tok, text, top_k=top_k, timeout=timeout)
+        # G primary
+        hits = _call_g_fused(g_url, text, top_k=top_k, timeout=timeout)
+        if not hits and tok:
+            # Gateway fallback — G 도달 실패 시에만
+            hits = _call_gateway_hybrid(gurl, tok, text, top_k=top_k, timeout=timeout)
         if not hits:
             rep.trust_deltas[nid] = rep.trust_deltas.get(nid, 0.0) - 0.5
             rep.issues.append(
                 VerifierIssue(
                     kind="rag_mismatch",
                     node_id=nid,
-                    detail="Gateway 대조 결과 없음",
+                    detail="G/Gateway 대조 결과 없음",
                     severity="warn",
                 )
             )

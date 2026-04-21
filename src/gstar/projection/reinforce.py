@@ -1,8 +1,8 @@
-"""Phase E3.5 — Reinforce 루프.
+"""Phase E3.5 — Reinforce 루프 (G 우선, Gateway 폴백).
 
-Verifier L2 를 통과해 `trust_score >= threshold` 에 도달한 fact 를 기존 Gateway
-`/notes` 로 역축적. Qdrant `personal_notes` (또는 설정한 collection) 에 저장되어
-다음 검증 자료로 재활용.
+Verifier L2 를 통과해 `trust_score >= threshold` 에 도달한 fact 를 G `/notes` 로
+역축적 (G 가 Gateway mirror 까지 자동 proxy). G 도달 실패 시에만 Gateway `/notes`
+직결로 폴백.
 
 source 는 `g:<node_id>` 로 태깅 → 순환 검증 방지 (L2 대조 시 자기 자신 제외 가능).
 """
@@ -69,6 +69,33 @@ def _fetch_eligible_facts(
     return out
 
 
+def _push_g_note(
+    g_url: str,
+    *,
+    text: str,
+    tags: list[str],
+    source: str,
+    namespace: str = "personal_notes",
+    timeout: float = 5.0,
+) -> bool:
+    """G `/notes` — 상위 계층. 인증 불필요. GP_MIRROR_QDRANT=on 이면 Gateway mirror 자동."""
+    body = json.dumps(
+        {"text": text, "source": source, "tags": tags, "namespace": namespace},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{g_url.rstrip('/')}/notes",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read()
+        return True
+    except Exception:
+        return False
+
+
 def _push_gateway_note(
     gateway_url: str,
     token: str,
@@ -78,6 +105,7 @@ def _push_gateway_note(
     source: str,
     timeout: float = 5.0,
 ) -> bool:
+    """Gateway `/notes` 직결 — G 도달 실패 시에만 fallback."""
     body = json.dumps(
         {"text": text, "source": source, "tags": tags}, ensure_ascii=False
     ).encode("utf-8")
@@ -100,20 +128,20 @@ def reinforce_to_gateway(
     min_trust: float = 3.0,
     namespace: str | None = None,
     gateway_url: str | None = None,
+    g_url: str | None = None,
     token: str | None = None,
     limit: int = 200,
     timeout: float = 5.0,
 ) -> ReinforceResult:
-    """G 의 trust≥min_trust fact 를 Gateway /notes 로 역축적.
+    """trust≥min_trust fact 를 G `/notes` 로 우선 역축적 (Gateway mirror 자동).
 
+    G 도달 실패 시에만 Gateway `/notes` 직결로 폴백.
     멱등성: 각 fact 의 attrs_json 에 `reinforced_at` 기록. 이후 호출 시 skip.
     """
     gurl = gateway_url or os.environ.get("GATEWAY_URL", "http://100.79.251.53:8000")
+    g_url = g_url or os.environ.get("G_URL", "http://100.79.251.53:9999")
     tok = token or os.environ.get("ASST_TOKEN", "")
     res = ReinforceResult()
-    if not tok:
-        res.errors.append("ASST_TOKEN 없음 — reinforce skip")
-        return res
 
     candidates = _fetch_eligible_facts(
         store, min_trust=min_trust, namespace=namespace, limit=limit
@@ -131,14 +159,24 @@ def reinforce_to_gateway(
             f"trust:{f['trust_score']:.1f}",
             f"ns:{f['namespace']}",
         ]
-        ok = _push_gateway_note(
-            gurl,
-            tok,
+        # G primary — 인증 불필요
+        ok = _push_g_note(
+            g_url,
             text=f["text"],
             tags=tags,
             source=f"g:{nid}",
             timeout=timeout,
         )
+        # Gateway fallback — G 실패 + 토큰 있을 때만
+        if not ok and tok:
+            ok = _push_gateway_note(
+                gurl,
+                tok,
+                text=f["text"],
+                tags=tags,
+                source=f"g:{nid}",
+                timeout=timeout,
+            )
         if ok:
             res.pushed += 1
             # attrs 에 reinforced_at 기록 (멱등성)
