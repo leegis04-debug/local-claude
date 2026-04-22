@@ -659,6 +659,7 @@ class NasIngestRequest(BaseModel):
     namespace: str                      # 이관 ns (예: "articles", "books", ...)
     min_entity_count: int = 2
     track: str = "document"
+    autosave: bool = True               # 배치 ingest 중엔 False 로 호출 → 마지막에 /faiss/save 1회
 
 
 class NasIngestResponse(BaseModel):
@@ -702,7 +703,8 @@ def ingest_nas(req: NasIngestRequest):
             track=req.track,
             meta_index=meta_index,
         )
-        s.faiss.save()
+        if req.autosave:
+            s.faiss.save()
     except Exception as exc:
         raise HTTPException(500, f"ingest failed: {exc}")
 
@@ -713,6 +715,16 @@ def ingest_nas(req: NasIngestRequest):
         entities=report.entities,
         edges=report.edges,
     )
+
+
+@app.post("/faiss/save")
+def faiss_save():
+    s = get_state()
+    try:
+        s.faiss.save()
+    except Exception as exc:
+        raise HTTPException(500, f"faiss save failed: {exc}")
+    return {"ok": True, "ntotal": int(s.faiss.index.ntotal)}
 
 
 # -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------
