@@ -71,12 +71,22 @@ def project_section(
     model: str | None = None,
     temperature: float = 0.2,
     num_predict: int | None = None,
-    timeout_s: float = 60.0,
+    timeout_s: float | None = None,
 ) -> ProjectorOutput:
-    """fact → section md. fact 외 생성 금지."""
+    """fact → section md. fact 외 생성 금지.
+
+    timeout_s 기본은 env `GP_PROJECTOR_TIMEOUT_S` (기본 180). panel 모드에서
+    4 persona 동시 decode 시 개별 요청 latency 가 90~120s 까지 늘어 기존 60s
+    에선 일부 persona 가 timeout 으로 빈 draft 반환했음 (critic 실패 사례).
+    """
     host = host or projection_host()
     model = model or _PROJECTOR_MODEL_DEFAULT
     np = num_predict if num_predict is not None else max(256, int(inp.section.target_tokens * 1.5))
+    if timeout_s is None:
+        try:
+            timeout_s = float(os.environ.get("GP_PROJECTOR_TIMEOUT_S", "180"))
+        except ValueError:
+            timeout_s = 180.0
     client = OllamaChatClient(
         host=host,
         model=model,

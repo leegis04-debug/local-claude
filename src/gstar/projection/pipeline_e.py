@@ -27,32 +27,36 @@ from gstar.projection.selector_loop import SelectorResult, run_selector
 # ---------- Stage B(3): 실시간 테마 그룹핑 ----------
 
 
-def _theme_labels(goal: str, facts: list[dict], max_themes: int = 4) -> list[str]:
-    """Gemma E4B 로 facts 를 2~4 테마로 분류해 라벨 리스트 반환.
-
-    실패 시 빈 리스트 (호출자는 단일 호출 폴백). Projector 프롬프트 앞에 scaffold
-    (## 1. <라벨1> ## 2. <라벨2>) 로 주입되어 평면 기술을 테마별 구조로 승격.
-    """
+def _theme_labels_single(
+    goal: str, facts: list[dict], max_themes: int = 4, min_themes: int = 3
+) -> list[str]:
+    """단일 호출 — facts 리스트 하나를 Gemma 에게 테마 분류 요청. 내부용."""
     if len(facts) < 4:
         return []
     from gstar.projection.selector_loop import selector_host
     from gstar.selector.gemma_client import OllamaChatClient
     client = OllamaChatClient(
         host=selector_host(),
-        model=os.environ.get("SELECTOR_MODEL", "gemma4:e4b"),
-        timeout_s=45.0,
-        num_predict=200,
-        temperature=0.2,
+        model=os.environ.get("GP_THEME_MODEL", os.environ.get("SELECTOR_MODEL", "gemma4:e4b")),
+        timeout_s=60.0,
+        num_predict=300,
+        temperature=0.3,
     )
     facts_block = "\n".join(
-        f"[{i}] {(f.get('text') or '')[:180]}" for i, f in enumerate(facts[:30])
+        f"[{i}] {(f.get('text') or '')[:180]}" for i, f in enumerate(facts)
     )
     prompt = (
         f"[목표] {goal}\n\n"
-        f"[지식 조각 {min(len(facts),30)}개]\n{facts_block}\n\n"
-        f"위 조각들을 {max_themes}개 이하 테마로 분류하고, 테마 라벨만 한 줄씩 나열.\n"
-        "형식 (정확히 준수):\n1. <라벨 1>\n2. <라벨 2>\n...\n"
-        "라벨은 명사구 (2~20자)."
+        f"[지식 조각 {len(facts)}개]\n{facts_block}\n\n"
+        f"작업: 위 {len(facts)}개 조각을 **정확히 {min_themes}~{max_themes}개 테마**로 분류.\n"
+        "절대 1개 테마로 뭉치지 말고, 의미·도메인·사용처 축으로 균등하게 나누어라.\n"
+        "각 테마에 1개 이상의 조각이 배정돼야 함.\n\n"
+        "형식 (정확히 준수. 다른 어떤 텍스트도 금지):\n"
+        "1. <테마 라벨 1>\n"
+        "2. <테마 라벨 2>\n"
+        "3. <테마 라벨 3>\n"
+        f"[최대 {max_themes}줄까지 번호]\n\n"
+        "라벨 규칙: 명사구 5~25자. **, ` 같은 기호 금지."
     )
     try:
         out = client.judge(system="너는 지식 조각 분류 전문가다.", prompt=prompt)
@@ -63,9 +67,47 @@ def _theme_labels(goal: str, facts: list[dict], max_themes: int = 4) -> list[str
         m = re.match(r"^\s*\d+\.\s*(.+?)\s*$", line)
         if m:
             lab = m.group(1).strip().strip("*").strip("`").strip()
-            if 2 <= len(lab) <= 30:
+            lab = re.sub(r"\*+", "", lab).strip()
+            if 3 <= len(lab) <= 40:
                 labels.append(lab)
     return labels[:max_themes]
+
+
+def _theme_labels(goal: str, facts: list[dict], max_themes: int = 4) -> list[str]:
+    """Gemma 로 facts 테마 분류. 40+ fact 는 chunk 로 나눠 여러 번 호출 후 merge.
+
+    실패 시 빈 리스트 (호출자는 단일 호출 폴백). Projector 프롬프트 앞에 scaffold
+    (## 1. <라벨1> ## 2. <라벨2>) 로 주입되어 평면 기술을 테마별 구조로 승격.
+
+    **수정 (d66fda5 follow-up)**: 단일 호출로 40 fact 주면 E4B 가 overwhelm 돼
+    1개 테마로 뭉치는 문제. chunk_size=20 으로 나눠 각각 분류 후 라벨 중복 제거로
+    통합. 총 라벨 수는 max_themes 로 제한.
+    """
+    if len(facts) < 4:
+        return []
+    chunk_size = int(os.environ.get("GP_THEME_CHUNK", "20") or "20")
+    # 소규모면 단일 호출
+    if len(facts) <= chunk_size:
+        return _theme_labels_single(goal, facts, max_themes=max_themes)
+
+    # 대규모: chunk 별 분류 후 merge
+    chunks = [facts[i : i + chunk_size] for i in range(0, len(facts), chunk_size)]
+    per_chunk_max = max(2, max_themes // len(chunks) + 1)  # chunk 당 2~N 라벨
+    all_labels: list[str] = []
+    for ci, ch in enumerate(chunks):
+        ls = _theme_labels_single(goal, ch, max_themes=per_chunk_max, min_themes=2)
+        all_labels.extend(ls)
+    # 중복 제거 (대소문자·공백 무시 key)
+    seen: set[str] = set()
+    dedup: list[str] = []
+    for lab in all_labels:
+        k = re.sub(r"\s+", "", lab.lower())
+        if k in seen:
+            continue
+        seen.add(k)
+        dedup.append(lab)
+    # 너무 많으면 상한 맞춤
+    return dedup[:max_themes]
 
 
 def _with_theme_scaffold(section: SectionSpec, labels: list[str]) -> SectionSpec:
