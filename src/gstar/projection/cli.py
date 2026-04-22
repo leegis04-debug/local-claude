@@ -13,9 +13,66 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import typer
+
+
+def _doc_frontmatter(
+    *,
+    stage: str,
+    track: str,
+    user_input: str,
+    version: int,
+    keywords: list[str] | None = None,
+    mode: str | None = None,
+    extra: dict | None = None,
+) -> str:
+    """P축 산출물 md 상단에 prepend 될 YAML frontmatter. 사용자 규칙 (2026-04-22):
+    모든 생성 md 는 날짜·버전·제목·키워드·재현 env 를 상단에 필수.
+    """
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(tz=kst).isoformat(timespec="seconds")
+    title_topic = (user_input or stage).strip().replace("\n", " ")
+    title = f"{stage} — {title_topic[:80]}"
+    kw = [k for k in (keywords or []) if k]
+    kw_str = ", ".join(kw) if kw else "-"
+    env_flags = {
+        "panel": os.environ.get("GP_PERSONAS", "off").lower() in {"on", "1", "true"},
+        "theme_group": os.environ.get("GP_THEME_GROUP", "off").lower() in {"on", "1", "true"},
+        "emergence": os.environ.get("GP_EMERGENCE", "off").lower() in {"on", "1", "true"},
+        "rank": os.environ.get("GP_QUESTION_RANK", "on").lower() in {"on", "1", "true"},
+        "rank_rag": os.environ.get("GP_QUESTION_RANK_RAG", "off").lower() in {"on", "1", "true"},
+    }
+    lines = [
+        "---",
+        f"title: {title}",
+        f"stage: {stage}",
+        f"track: {track}",
+        f"created: {now}",
+        f"version: v{version}",
+        f"keywords: [{kw_str}]",
+        f"mode: {mode or 'classic'}",
+        f"panel: {'on' if env_flags['panel'] else 'off'}",
+        f"theme_group: {'on' if env_flags['theme_group'] else 'off'}",
+        f"emergence: {'on' if env_flags['emergence'] else 'off'}",
+        f"rank: {'on' if env_flags['rank'] else 'off'}"
+        + (" (rag)" if env_flags['rank_rag'] else ""),
+    ]
+    if extra:
+        for k, v in extra.items():
+            lines.append(f"{k}: {v}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
+
+
+def _next_version(stage_dir: Path, stage: str) -> int:
+    """`_versions/<stage>-v*.md` 중 최대 번호 + 1. 없으면 1."""
+    ver_dir = stage_dir / "_versions"
+    if not ver_dir.exists():
+        return 1
+    return len(list(ver_dir.glob(f"{stage}-v*.md"))) + 1
 
 from gstar.config import EMBED_DIM_DEFAULT, Paths
 from gstar.entity.linker import link, list_canonicals
@@ -713,9 +770,19 @@ def _run_mode_e(
             ver_path = ver_dir / f"{stage}-v{n}.md"
             ver_path.write_text(main_path.read_text(encoding="utf-8"), encoding="utf-8")
             typer.echo(f"기존 {main_path.name} → {ver_path.relative_to(stage_dir)} 백업")
-        main_path.write_text("\n".join(all_texts), encoding="utf-8")
+        # 요약 통계 (frontmatter 에 사용)
         ok_cnt = sum(1 for r in reports if r["ok"])
         skip_cnt = len(reports) - ok_cnt
+        # frontmatter 헤더 prepend (사용자 규칙 2026-04-22)
+        _kw: list[str] = []
+        if ranking_report:
+            _kw = list({r.get("type") or "" for r in ranking_report[:10] if r.get("type")})
+        _fm = _doc_frontmatter(
+            stage=stage, track=track_name, user_input=user_input,
+            version=_next_version(stage_dir, stage), keywords=_kw, mode=mode,
+            extra={"questions": f"{ok_cnt}/{len(reports)} ok"} if reports else None,
+        )
+        main_path.write_text(_fm + "\n".join(all_texts), encoding="utf-8")
         typer.echo(
             f"stage 합본 저장: {main_path} (ok={ok_cnt} skip={skip_cnt} total={len(reports)})"
         )
@@ -758,7 +825,26 @@ def _run_mode_e(
             (ver_dir / f"{stage}-v{n}.md").write_text(
                 main_path.read_text(encoding="utf-8"), encoding="utf-8"
             )
-        main_path.write_text(rep.projector.text, encoding="utf-8")
+        # frontmatter 헤더 prepend (사용자 규칙 2026-04-22)
+        # 키워드: rep.warnings 의 [theme] 라벨 추출
+        _kw: list[str] = []
+        for w in (rep.warnings or []):
+            if "[theme]" in w and "테마:" in w:
+                try:
+                    # "[theme] 4개 테마: ['a', 'b', 'c', 'd']" 추출
+                    import ast, re as _re
+                    m = _re.search(r"테마:\s*(\[.*\])", w)
+                    if m:
+                        _kw = [str(x) for x in ast.literal_eval(m.group(1))]
+                except Exception:
+                    pass
+        _extra = {"selector_facts": len(rep.selector.final_facts) if rep.selector else 0}
+        _fm = _doc_frontmatter(
+            stage=stage, track=track_name, user_input=user_input,
+            version=_next_version(stage_dir, stage), keywords=_kw, mode=mode,
+            extra=_extra,
+        )
+        main_path.write_text(_fm + rep.projector.text, encoding="utf-8")
         typer.echo(f"섹션 저장: {main_path}")
     else:
         typer.echo(f"[mode={mode}] Projector skip. warnings={rep.warnings}")
