@@ -1172,8 +1172,19 @@ def search_fused(req: FusedSearchRequest):
             print(f"[_run_g] gravity FAILED: {type(exc).__name__}: {exc}", flush=True)
             traceback.print_exc()
             return []
+        # [blacklist-filter] Claude Layer 2 에서 거부된 fact 는 제외
+        try:
+            blacklist: set[str] = set(s.store.list_rejected(limit=10000))
+        except Exception as exc:
+            print(f"[_run_g] blacklist load FAILED: {type(exc).__name__}: {exc}", flush=True)
+            blacklist = set()
         out: list[FusedHit] = []
-        for e in entries[: req.top_k * 2]:
+        # blacklist 로 일부가 스킵될 수 있으므로 fetch buffer 를 *2 → *3 로 확대
+        for e in entries[: req.top_k * 3]:
+            if e.node_id in blacklist:
+                continue
+            if len(out) >= req.top_k * 2:
+                break
             try:
                 n = s.store.get_node(e.node_id)
             except Exception:
