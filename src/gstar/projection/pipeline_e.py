@@ -97,17 +97,61 @@ def _theme_labels(goal: str, facts: list[dict], max_themes: int = 4) -> list[str
     for ci, ch in enumerate(chunks):
         ls = _theme_labels_single(goal, ch, max_themes=per_chunk_max, min_themes=2)
         all_labels.extend(ls)
-    # 중복 제거 (대소문자·공백 무시 key)
-    seen: set[str] = set()
-    dedup: list[str] = []
-    for lab in all_labels:
+    return _merge_near_duplicate_labels(all_labels, max_themes=max_themes)
+
+
+def _label_tokens(lab: str) -> set[str]:
+    """라벨을 비교용 토큰 집합으로 정규화 — 한글·영숫자 2자+ 연속 추출, lowercase."""
+    return {t for t in re.findall(r"[가-힣]{2,}|[A-Za-z0-9]{2,}", lab.lower())}
+
+
+def _merge_near_duplicate_labels(labels: list[str], *, max_themes: int = 4) -> list[str]:
+    """chunk 간 반복 호출로 생긴 유사 라벨 중복 제거.
+
+    전략 (독립 · 의존 순서대로 적용):
+    1. 공백·대소문자 제거 후 완전 일치 → 첫 라벨만 유지
+    2. 토큰 overlap 이 max(|A|,|B|) 의 2/3 이상 → 짧은 라벨 유지 ("농식품 유통 및 판매
+       시스템 구축" vs "농산물 유통 및 판매 시스템 구축" 병합)
+    3. 길이 순이 아니라 **원 순서** 유지 (앞선 chunk 의 라벨 우선). 상한 max_themes
+    """
+    # Step 1 — 정규화 완전일치 dedup
+    seen_key: set[str] = set()
+    normed: list[str] = []
+    for lab in labels:
         k = re.sub(r"\s+", "", lab.lower())
-        if k in seen:
+        if k in seen_key:
             continue
-        seen.add(k)
-        dedup.append(lab)
-    # 너무 많으면 상한 맞춤
-    return dedup[:max_themes]
+        seen_key.add(k)
+        normed.append(lab)
+
+    # Step 2 — 토큰 overlap 기반 near-dup merge
+    kept: list[str] = []
+    kept_tokens: list[set[str]] = []
+    sim_threshold = float(os.environ.get("GP_THEME_DEDUP_SIM", "0.66") or "0.66")
+    for lab in normed:
+        toks = _label_tokens(lab)
+        if not toks:
+            kept.append(lab)
+            kept_tokens.append(toks)
+            continue
+        merged = False
+        for i, prev_toks in enumerate(kept_tokens):
+            if not prev_toks:
+                continue
+            overlap = len(toks & prev_toks)
+            denom = max(len(toks), len(prev_toks))
+            if denom > 0 and overlap / denom >= sim_threshold:
+                # 병합 — 더 짧은 라벨을 대표로 (핵심 명사구 남기기)
+                if len(lab) < len(kept[i]):
+                    kept[i] = lab
+                    kept_tokens[i] = toks
+                merged = True
+                break
+        if not merged:
+            kept.append(lab)
+            kept_tokens.append(toks)
+
+    return kept[:max_themes]
 
 
 def _with_theme_scaffold(section: SectionSpec, labels: list[str]) -> SectionSpec:
