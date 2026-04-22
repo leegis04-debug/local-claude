@@ -123,6 +123,27 @@ class ChainVerifyOut(BaseModel):
     bad_node_ids: list[str]
 
 
+class GraphExpandIn(BaseModel):
+    node_ids: list[str]
+    hops: int = 1            # 1 or 2 (2 이상은 팽창 위험)
+    limit: int = 50          # 최종 neighbor 반환 수 상한
+    kinds: list[str] | None = None  # fact/entity/... 필터
+
+
+class GraphExpandNode(BaseModel):
+    node_id: str
+    kind: str
+    text: str
+    namespace: str
+    distance: int            # seed 로부터 hop 수 (1 또는 2)
+
+
+class GraphExpandOut(BaseModel):
+    nodes: list[GraphExpandNode]
+    total_edges_visited: int
+    truncated: bool          # limit 로 잘렸는지
+
+
 # -------- endpoints --------
 
 
@@ -308,6 +329,66 @@ def entity_neighbors(
             }
             for h in hits
         ],
+    )
+
+
+@app.post("/graph/expand", response_model=GraphExpandOut)
+def graph_expand(body: GraphExpandIn):
+    """임의 node_ids 집합 → edge 기반 1~2 hop neighbor 확장.
+
+    Stage B(2) — emergence 루프에서 seed fact 의 graph 관계 인접 노드를
+    retrieval 후보 풀에 추가해 의미+관계 결합. DuckStore.edges_of_many 로
+    batch edge fetch.
+    """
+    s = get_state()
+    hops = max(1, min(2, int(body.hops or 1)))
+    seen: set[str] = set(body.node_ids or [])
+    all_by_dist: list[tuple[str, int]] = []  # (node_id, distance)
+    current = set(body.node_ids or [])
+    edges_visited = 0
+    for hop in range(1, hops + 1):
+        if not current:
+            break
+        edge_map = s.store.edges_of_many(list(current))
+        next_level: set[str] = set()
+        for nid, edges in edge_map.items():
+            for e in edges:
+                edges_visited += 1
+                other = e.dst if e.src == nid else e.src
+                if other and other not in seen:
+                    seen.add(other)
+                    next_level.add(other)
+        for nid in next_level:
+            all_by_dist.append((nid, hop))
+        current = next_level
+
+    # limit 적용 + node 데이터 배치 fetch
+    truncated = len(all_by_dist) > int(body.limit or 50)
+    all_by_dist = all_by_dist[: int(body.limit or 50)]
+    node_ids = [nid for nid, _ in all_by_dist]
+    node_map = s.store.get_nodes_many(node_ids)
+    kind_filter = set(body.kinds) if body.kinds else None
+
+    out_nodes: list[GraphExpandNode] = []
+    for nid, dist in all_by_dist:
+        n = node_map.get(nid)
+        if n is None:
+            continue
+        if kind_filter and n.kind not in kind_filter:
+            continue
+        out_nodes.append(
+            GraphExpandNode(
+                node_id=n.id,
+                kind=n.kind,
+                text=n.text,
+                namespace=n.source_namespace,
+                distance=dist,
+            )
+        )
+    return GraphExpandOut(
+        nodes=out_nodes,
+        total_edges_visited=edges_visited,
+        truncated=truncated,
     )
 
 

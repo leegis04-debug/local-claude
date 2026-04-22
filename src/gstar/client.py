@@ -170,6 +170,30 @@ class GClient:
 
     # ---------- Phase D: fused wrapper + notes + worker + communities ----------
 
+    def graph_expand(
+        self,
+        node_ids: list[str],
+        *,
+        hops: int = 1,
+        limit: int = 50,
+        kinds: list[str] | None = None,
+        timeout: float = 10.0,
+    ) -> list[dict]:
+        """Stage B(2) — seed node_ids 의 edge 1~2 hop neighbor 확장.
+
+        반환 item: {node_id, kind, text, namespace, distance}. 실패 시 빈 list.
+        """
+        body: dict = {"node_ids": node_ids, "hops": hops, "limit": limit}
+        if kinds:
+            body["kinds"] = kinds
+        try:
+            r = self.http.post("/graph/expand", json=body, timeout=timeout)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("nodes", []) if isinstance(data, dict) else []
+        except Exception:
+            return []
+
     def fused_search(
         self,
         query: str,

@@ -338,6 +338,56 @@ def _run_emergence_loop(
         f"[emergence] iter 0: {prev_count} facts "
         f"(top_k={em_skwargs['top_k_final']} cand={em_skwargs['candidate_k']})"
     )
+
+    # Stage B(2) — graph 1~2 hop 확장으로 seed fact 의 edge 인접 노드 수집.
+    # emergence 루프와 병행 시 창발 fact 가 기존 지식항성과 관계(edge)로
+    # 연결되는 확장 경로 형성. GP_GRAPH_EXPAND=on 에만 활성.
+    use_graph = os.environ.get("GP_GRAPH_EXPAND", "off").lower() in {"on", "1", "true"}
+    graph_hops = int(os.environ.get("GP_GRAPH_HOPS", "1") or "1")
+    graph_limit = int(os.environ.get("GP_GRAPH_EXPAND_LIMIT", "40") or "40")
+
+    def _maybe_graph_merge(sel_obj: "SelectorResult", label: str) -> None:
+        """sel_obj.final_facts 의 seed node_ids 로 graph expand → merge."""
+        if not use_graph or not sel_obj.final_facts:
+            return
+        seed_ids = [f.get("node_id") for f in sel_obj.final_facts if f.get("node_id")]
+        if not seed_ids:
+            return
+        try:
+            neighbors = gclient.graph_expand(
+                seed_ids[:20],  # seed 상한 — 너무 크면 서버 부담
+                hops=graph_hops,
+                limit=graph_limit,
+            )
+        except Exception as exc:
+            rep.warnings.append(f"[graph] expand 실패 {label}: {type(exc).__name__}: {exc}")
+            return
+        if not neighbors:
+            rep.warnings.append(f"[graph] expand {label}: neighbor 0")
+            return
+        existing_ids = {f.get("node_id") for f in sel_obj.final_facts}
+        existing_texts = {(f.get("text") or "")[:150] for f in sel_obj.final_facts}
+        added = 0
+        for n in neighbors:
+            nid = n.get("node_id")
+            txt = (n.get("text") or "")[:150]
+            if nid in existing_ids or txt in existing_texts:
+                continue
+            sel_obj.final_facts.append(
+                {
+                    "node_id": nid,
+                    "text": n.get("text") or "",
+                    "score": 0.5,  # graph 출처는 semantic score 없어 중립값
+                    "origin": f"graph:dist{n.get('distance', 1)}",
+                    "namespace": n.get("namespace") or "",
+                }
+            )
+            existing_ids.add(nid)
+            added += 1
+        rep.warnings.append(f"[graph] expand {label}: +{added} neighbor merged (hops={graph_hops})")
+
+    _maybe_graph_merge(sel, "iter0")
+
     if prev_count == 0:
         # seed 가 전무하면 web 만 돌려 초기 축적 (강제 fresh — 이미 부재 확인됨)
         rep.warnings.append("[emergence] seed 0 → goal 직접 웹검색 1회 (force_web)")
@@ -381,6 +431,7 @@ def _run_emergence_loop(
         )
 
         new_sel = run_selector(goal, gclient=gclient, **em_skwargs)
+        _maybe_graph_merge(new_sel, f"iter{it}")
         new_count = len(new_sel.final_facts)
         sel_gain = new_count - prev_count
         rep.warnings.append(
