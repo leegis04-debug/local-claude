@@ -92,6 +92,61 @@ class DuckStore:
             self.conn.execute(_MIGRATIONS_V6.read_text(encoding="utf-8"))
         if _MIGRATIONS_V7.exists():
             self.conn.execute(_MIGRATIONS_V7.read_text(encoding="utf-8"))
+        # 2026-04-22 — Claude Layer 2 거부 fact 기록 테이블 (negative feedback).
+        # 별도 migrations 파일 없이 런타임 IF NOT EXISTS 로 생성.
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rejected_facts (
+                node_id        VARCHAR PRIMARY KEY,
+                reason         VARCHAR NOT NULL DEFAULT '',
+                rejected_by    VARCHAR NOT NULL DEFAULT 'claude',
+                rejected_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                source_stage   VARCHAR,
+                source_track   VARCHAR
+            )
+            """
+        )
+
+    # ---------- Negative feedback (Claude Layer 2) ----------
+
+    def mark_rejected(
+        self,
+        node_id: str,
+        *,
+        reason: str = "",
+        rejected_by: str = "claude",
+        source_stage: str | None = None,
+        source_track: str | None = None,
+    ) -> None:
+        """Claude 가 거부한 fact 를 blacklist 등록. 같은 node_id 재호출 시 UPSERT."""
+        with self.lock:
+            self.conn.execute(
+                "INSERT INTO rejected_facts (node_id, reason, rejected_by, source_stage, source_track) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (node_id) DO UPDATE SET reason = excluded.reason, "
+                "rejected_by = excluded.rejected_by, rejected_at = now()",
+                [node_id, reason or "", rejected_by, source_stage, source_track],
+            )
+
+    def list_rejected(self, limit: int = 200) -> list[str]:
+        """최근 거부된 node_id 리스트 (Selector filter 용)."""
+        try:
+            rows = self._read_conn().execute(
+                "SELECT node_id FROM rejected_facts ORDER BY rejected_at DESC LIMIT ?",
+                [int(limit)],
+            ).fetchall()
+        except duckdb.InternalException:
+            return []
+        return [r[0] for r in rows if r and r[0]]
+
+    def is_rejected(self, node_id: str) -> bool:
+        try:
+            r = self._read_conn().execute(
+                "SELECT 1 FROM rejected_facts WHERE node_id = ?", [node_id]
+            ).fetchone()
+        except duckdb.InternalException:
+            return False
+        return r is not None
 
     def close(self) -> None:
         self.conn.close()

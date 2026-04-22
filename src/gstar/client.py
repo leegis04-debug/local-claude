@@ -170,6 +170,36 @@ class GClient:
 
     # ---------- Phase D: fused wrapper + notes + worker + communities ----------
 
+    def reinforce_negative(
+        self,
+        rejections: list[dict],
+        *,
+        rejected_by: str = "claude",
+        timeout: float = 5.0,
+    ) -> dict:
+        """Claude Layer 2 가 거부한 fact node_ids 를 G 서버 blacklist 등록.
+
+        각 rejection: {"node_id": str, "reason": str, "source_stage"?: str,
+        "source_track"?: str}. 반환: {"recorded": N, "total_blacklist": M}.
+        실패 시 {"recorded": 0, "total_blacklist": -1}.
+        """
+        body = {"rejections": rejections, "rejected_by": rejected_by}
+        try:
+            r = self.http.post("/reinforce/negative", json=body, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return {"recorded": 0, "total_blacklist": -1}
+
+    def list_negative(self, limit: int = 200, timeout: float = 5.0) -> list[str]:
+        try:
+            r = self.http.get("/reinforce/negative/list", params={"limit": limit}, timeout=timeout)
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
     def graph_expand(
         self,
         node_ids: list[str],

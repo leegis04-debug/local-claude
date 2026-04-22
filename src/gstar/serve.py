@@ -130,6 +130,23 @@ class GraphExpandIn(BaseModel):
     kinds: list[str] | None = None  # fact/entity/... 필터
 
 
+class RejectionItem(BaseModel):
+    node_id: str
+    reason: str = ""
+    source_stage: str | None = None
+    source_track: str | None = None
+
+
+class ReinforceNegativeIn(BaseModel):
+    rejections: list[RejectionItem]
+    rejected_by: str = "claude"
+
+
+class ReinforceNegativeOut(BaseModel):
+    recorded: int
+    total_blacklist: int
+
+
 class GraphExpandNode(BaseModel):
     node_id: str
     kind: str
@@ -330,6 +347,38 @@ def entity_neighbors(
             for h in hits
         ],
     )
+
+
+@app.post("/reinforce/negative", response_model=ReinforceNegativeOut)
+def reinforce_negative(body: ReinforceNegativeIn):
+    """Claude Layer 2 (jw:refine) 가 거부한 fact 를 blacklist 등록.
+
+    emergence 의 창발 fact 중 Claude 가 근거 없음으로 판단한 node_id 들을
+    rejected_facts 테이블에 기록. Selector fused_search/인접 검색에서 이후
+    제외될 수 있도록 토대.
+    """
+    s = get_state()
+    recorded = 0
+    for r in body.rejections:
+        try:
+            s.store.mark_rejected(
+                r.node_id,
+                reason=r.reason,
+                rejected_by=body.rejected_by,
+                source_stage=r.source_stage,
+                source_track=r.source_track,
+            )
+            recorded += 1
+        except Exception:
+            continue
+    total = len(s.store.list_rejected(limit=100000))
+    return ReinforceNegativeOut(recorded=recorded, total_blacklist=total)
+
+
+@app.get("/reinforce/negative/list", response_model=list[str])
+def list_negative(limit: int = Query(200, ge=1, le=10000)):
+    s = get_state()
+    return s.store.list_rejected(limit=limit)
 
 
 @app.post("/graph/expand", response_model=GraphExpandOut)
