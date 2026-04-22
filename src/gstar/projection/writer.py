@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from gstar.projection.frontmatter import build as _build_frontmatter
+from gstar.projection.frontmatter import has_frontmatter, next_version
 from gstar.projection.renderer import RenderedSection, merge as render_merge
 from gstar.storage.duckdb_store import DuckStore
 
@@ -40,6 +42,7 @@ def _write_markdown(
     *,
     citations: list[str],
     title: str | None = None,
+    frontmatter: str | None = None,
 ) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     body_parts: list[str] = []
@@ -49,6 +52,9 @@ def _write_markdown(
     if citations:
         body_parts.append("\n<!-- citations: " + ", ".join(citations) + " -->")
     final = "\n".join(body_parts) + "\n"
+    # 사용자 규칙 (2026-04-22): md 상단 frontmatter 필수. 이미 있으면 중복 방지.
+    if frontmatter and not has_frontmatter(final):
+        final = frontmatter + final
     out_path.write_text(final, encoding="utf-8")
     return len(final.encode("utf-8"))
 
@@ -183,23 +189,41 @@ def write(
     citations = citations or []
     fact_ids = fact_ids or []
 
+    # frontmatter 조립 (사용자 규칙 2026-04-22) — 섹션 타이틀 상위 5개를 키워드로
+    _kw: list[str] = []
+    for s in sections[:5]:
+        t = getattr(getattr(s, "section", None), "title", "") or ""
+        if t and t not in _kw:
+            _kw.append(t)
+    _fm = _build_frontmatter(
+        stage=stage, track=track or "",
+        user_input=title or stage,
+        version=next_version(stage_dir, stage),
+        keywords=_kw, mode="classic",
+        extra={
+            "sections": len(sections),
+            "fact_ids": len(fact_ids),
+            "ollama_model": ollama_model or "-",
+        },
+    )
+
     if output_format == "code":
         out_path = stage_dir / f"{stage}.md"
         bytes_written = _write_code(merged, out_path)
     elif output_format == "hwpx":
         out_path = stage_dir / f"{stage}.md"
         bytes_written = _write_markdown(
-            merged, out_path, citations=citations, title=title
+            merged, out_path, citations=citations, title=title, frontmatter=_fm
         )
     elif output_format == "docx":
         out_path = stage_dir / f"{stage}.md"
         bytes_written = _write_markdown(
-            merged, out_path, citations=citations, title=title
+            merged, out_path, citations=citations, title=title, frontmatter=_fm
         )
     else:
         out_path = stage_dir / f"{stage}.md"
         bytes_written = _write_markdown(
-            merged, out_path, citations=citations, title=title
+            merged, out_path, citations=citations, title=title, frontmatter=_fm
         )
 
     run_id = ""
