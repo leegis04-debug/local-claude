@@ -33,10 +33,15 @@ class SBertEmbedder:
         assert self._dim is not None
         return self._dim
 
-    def encode(self, texts: list[str]) -> np.ndarray:
+    def encode(self, texts: list[str], batch_size: int = 128) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
         self._ensure()
         assert self._model is not None
-        vecs = self._model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        vecs = self._model.encode(
+            texts,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            batch_size=batch_size,
+        )
         return vecs.astype(np.float32)
