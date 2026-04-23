@@ -102,7 +102,7 @@ def _write_tick(store, rep: TickReport) -> None:
             pass  # tick 기록 실패가 워커 자체를 막지 않음
 
 
-LIGHT_STEPS = ("community", "procedures")
+LIGHT_STEPS = ("community", "procedures", "wiki_inbox")
 HEAVY_STEPS = (
     "qdrant_mirror",
     "neo4j_mirror",
@@ -253,6 +253,25 @@ def run_cycle(
                 }
             except Exception as exc:
                 rep.steps["neo4j_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # Sprint C #1 — wiki/_inbox 감지 → G 자동 ingest (편집 피드백 루프)
+        if ("wiki_inbox" in active_steps and embedder is not None
+                and os.environ.get("WIKI_INBOX_ENABLED", "on").lower() in {"on", "1", "true"}):
+            try:
+                from gstar.mirror.wiki_inbox import ingest_inbox
+                ires = ingest_inbox(store, faiss=faiss, embedder=embedder)
+                rep.steps["wiki_inbox"] = {
+                    "scanned": ires.scanned,
+                    "ingested": ires.ingested,
+                    "skipped": ires.skipped,
+                    "failed": ires.failed,
+                    "facts": ires.facts_added,
+                    "entities": ires.entities_added,
+                    "edges": ires.edges_added,
+                    "errors": ires.errors[:3],
+                }
+            except Exception as exc:
+                rep.steps["wiki_inbox"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # Sprint B — G → markdown wiki 파생 뷰 (architecture v4.1 §4)
         if ("wiki_mirror" in active_steps

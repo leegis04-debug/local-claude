@@ -776,6 +776,159 @@ def worker_wiki_mirror(req: WikiEmitRequest):
     return _run_wiki_emit(req.out_dir)
 
 
+class WikiInboxResponse(BaseModel):
+    scanned: int
+    ingested: int
+    skipped: int
+    failed: int
+    facts: int
+    entities: int
+    edges: int
+    errors: list[str]
+
+
+@app.post("/worker/wiki_inbox", response_model=WikiInboxResponse)
+def worker_wiki_inbox():
+    """Sprint C #1 — wiki/_inbox/*.md 감지 → G 재흡수. LIGHT_STEPS 소속,
+    tick 마다 자동 실행. 직접 트리거도 가능.
+    env WIKI_INBOX_ENABLED=on (기본), GSTAR_WIKI_INBOX_NS=personal_notes."""
+    from gstar.mirror.wiki_inbox import ingest_inbox
+    s = get_state()
+    try:
+        r = ingest_inbox(s.store, faiss=s.faiss, embedder=s.embedder)
+    except Exception as exc:
+        raise HTTPException(500, f"wiki inbox failed: {exc}")
+    return WikiInboxResponse(
+        scanned=r.scanned,
+        ingested=r.ingested,
+        skipped=r.skipped,
+        failed=r.failed,
+        facts=r.facts_added,
+        entities=r.entities_added,
+        edges=r.edges_added,
+        errors=r.errors,
+    )
+
+
+# -------- Sprint C #2 — /wiki/* MCP-스타일 원격 read/write --------
+
+
+class WikiListItem(BaseModel):
+    path: str           # wiki root 기준 상대 경로
+    size: int
+    mtime: str
+
+
+class WikiListResponse(BaseModel):
+    root: str
+    count: int
+    items: list[WikiListItem]
+
+
+class WikiReadResponse(BaseModel):
+    path: str
+    size: int
+    content: str
+
+
+class WikiInboxWriteRequest(BaseModel):
+    filename: str       # "my_note.md" 형태. slash 포함 불가
+    content: str
+
+
+class WikiInboxWriteResponse(BaseModel):
+    path: str
+    size: int
+
+
+def _wiki_root() -> "Path":
+    from pathlib import Path as _P
+    from gstar.mirror.wiki_view import _out_dir
+    return _out_dir()
+
+
+def _wiki_resolve(rel_path: str) -> "Path":
+    """wiki root 기준 상대 경로를 안전하게 resolve. path traversal 방지."""
+    from pathlib import Path as _P
+    root = _wiki_root().resolve()
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(400, f"path escapes wiki root: {rel_path}")
+    return target
+
+
+@app.get("/wiki/list", response_model=WikiListResponse)
+def wiki_list(
+    type: str = "entity",       # entity | topic | source | all
+    limit: int = 200,
+):
+    """파생 뷰 md 목록. 규모 크므로 limit 필수."""
+    from datetime import datetime as _dt
+    root = _wiki_root()
+    if not root.exists():
+        return WikiListResponse(root=str(root), count=0, items=[])
+    if type == "entity":
+        subdir = root / "entities"
+    elif type == "topic":
+        subdir = root / "topics"
+    elif type == "source":
+        subdir = root / "sources"
+    elif type == "all":
+        subdir = root
+    else:
+        raise HTTPException(400, f"unknown type: {type}")
+    files = sorted(subdir.rglob("*.md"))[:max(1, min(int(limit), 2000))]
+    items = []
+    for p in files:
+        try:
+            st = p.stat()
+            items.append(WikiListItem(
+                path=str(p.relative_to(root)),
+                size=st.st_size,
+                mtime=_dt.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            ))
+        except Exception:
+            continue
+    return WikiListResponse(root=str(root), count=len(items), items=items)
+
+
+@app.get("/wiki/read", response_model=WikiReadResponse)
+def wiki_read(path: str):
+    """wiki root 상대 경로 한 개 파일 read. frontmatter 포함 전체 내용."""
+    target = _wiki_resolve(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, f"not found: {path}")
+    try:
+        content = target.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(500, f"read failed: {exc}")
+    return WikiReadResponse(path=path, size=target.stat().st_size, content=content)
+
+
+@app.post("/wiki/inbox/write", response_model=WikiInboxWriteResponse)
+def wiki_inbox_write(req: WikiInboxWriteRequest):
+    """인간(또는 Claude Code) 이 wiki 에 입력하는 유일한 경로. `_inbox/` 에만
+    쓰고, 다음 worker tick(LIGHT_STEPS.wiki_inbox) 이 G 로 재흡수 후 wiki
+    regenerate 에 반영. 이름에 slash · 점두어 금지."""
+    if "/" in req.filename or req.filename.startswith(".") or not req.filename:
+        raise HTTPException(400, "filename must be a plain basename (no slash/dot-prefix)")
+    if not req.filename.endswith(".md"):
+        raise HTTPException(400, "filename must end with .md")
+    inbox = _wiki_root() / "_inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    target = inbox / req.filename
+    try:
+        target.write_text(req.content, encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(500, f"write failed: {exc}")
+    return WikiInboxWriteResponse(
+        path=str(target.relative_to(_wiki_root())),
+        size=target.stat().st_size,
+    )
+
+
 # -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------
 
 
