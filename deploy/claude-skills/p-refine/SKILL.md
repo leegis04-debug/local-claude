@@ -219,6 +219,24 @@ curl -sf -X POST "$G_URL/notes" -H "Content-Type: application/json" \
     '{text:$diff, source:"claude-p-refine-diff", tags:["p-refine-diff",$tid], namespace:"agri-food-ai-gjw"}')"
 ```
 
+#### (d) Wiki _inbox drop (선택, `WIKI_INBOX_ON_REFINE=on` 시)
+
+정제된 최종본을 Wiki `_inbox/` 에 push. 다음 worker tick(LIGHT_STEPS.wiki_inbox)
+이 G 재흡수 → wiki regenerate 에 entity/topic 으로 반영 → Gitea 자동 push.
+Claude 정제 결과물이 **wiki 그래프의 일부로 compound** 되는 루프.
+
+```bash
+# filename 은 basename 만 (슬래시·점두어 금지). 내부에서 .md 필수.
+WIKI_FNAME="refined_$(date -u +%Y%m%dT%H%M%SZ)_${PROJECT_ID}_${STAGE}.md"
+curl -sf -X POST "$G_URL/wiki/inbox/write" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg fn "$WIKI_FNAME" --rawfile body "$STAGE_DIR/$TARGET_MD" \
+        '{filename:$fn, content:$body}')"
+```
+
+응답 `{"path":"_inbox/refined_<ts>_....md","size":N}` 확인. inbox 는 worker
+tick 이 주기적으로 비우므로 클라이언트 측 별도 정리 불필요.
+
 이 diff 가 Selector 의 procedure retrieval 재료로 **"Gemma 이렇게 썼을 때 Claude 는 이렇게 고쳤다"** 패턴 학습의 핵심 원천.
 
 ### 8. 사용자 보고
@@ -234,7 +252,8 @@ p-refine 완료
 ├─ 결과:    <TARGET_MD basename> (<after>B, +<delta>B)
 ├─ 추가 섹션: <list>
 ├─ G 근거:  <N> 건 편입 (<top sources>)
-└─ G 로그:  task_id=<TID>, notes=OK, trace=OK, diff=<ingest|skip>
+├─ G 로그:  task_id=<TID>, notes=OK, trace=OK, diff=<ingest|skip>
+└─ wiki inbox: <pushed refined_<ts>.md | skipped>
 ```
 
 ## 호출 예시
@@ -265,6 +284,7 @@ p-refine 완료
 | `P_REFINE_DIFF_INGEST` | `off` | diff 자체를 G 노드로 적재 (학습 풍부도 ↑, DB 크기 ↑) |
 | `P_REFINE_DRY_RUN` | `off` | 실제 파일 저장 안 하고 미리보기만 |
 | `P_REFINE_NS` | `<project_id>` | diff ingest 시 namespace override |
+| `WIKI_INBOX_ON_REFINE` | `off` | 정제본을 `POST /wiki/inbox/write` 로 Wiki `_inbox` 에 drop (Sprint C #3) |
 
 ## 주의사항
 
