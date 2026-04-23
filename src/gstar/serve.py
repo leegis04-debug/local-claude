@@ -727,7 +727,7 @@ def faiss_save():
     return {"ok": True, "ntotal": int(s.faiss.index.ntotal)}
 
 
-# -------- /mirror/wiki/emit (Sprint B: G → markdown 파생 뷰) --------
+# -------- /mirror/wiki/emit + /worker/wiki_mirror (Sprint B: G → markdown 파생 뷰) --------
 
 
 class WikiEmitRequest(BaseModel):
@@ -743,13 +743,11 @@ class WikiEmitResponse(BaseModel):
     errors: list[str]
 
 
-@app.post("/mirror/wiki/emit", response_model=WikiEmitResponse)
-def mirror_wiki_emit(req: WikiEmitRequest):
+def _run_wiki_emit(out_dir: str | None) -> WikiEmitResponse:
     from pathlib import Path as _P
     from gstar.mirror.wiki_view import emit_all, _out_dir
-
     s = get_state()
-    out = _P(req.out_dir) if req.out_dir else _out_dir()
+    out = _P(out_dir) if out_dir else _out_dir()
     try:
         r = emit_all(s.store, out)
     except Exception as exc:
@@ -762,6 +760,18 @@ def mirror_wiki_emit(req: WikiEmitRequest):
         index_written=r.index_written,
         errors=r.errors,
     )
+
+
+@app.post("/mirror/wiki/emit", response_model=WikiEmitResponse)
+def mirror_wiki_emit(req: WikiEmitRequest):
+    return _run_wiki_emit(req.out_dir)
+
+
+@app.post("/worker/wiki_mirror", response_model=WikiEmitResponse)
+def worker_wiki_mirror(req: WikiEmitRequest):
+    """Worker tick 과 동일 의미의 개별 트리거. HEAVY_STEPS 에 wiki_mirror 포함.
+    env WIKI_MIRROR_ENABLED=on (기본)."""
+    return _run_wiki_emit(req.out_dir)
 
 
 # -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------

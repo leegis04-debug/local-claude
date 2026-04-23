@@ -106,6 +106,7 @@ LIGHT_STEPS = ("community", "procedures")
 HEAVY_STEPS = (
     "qdrant_mirror",
     "neo4j_mirror",
+    "wiki_mirror",
     "legacy_bridge",
     "legacy_fact_bridge",
     "code_repos",
@@ -252,6 +253,22 @@ def run_cycle(
                 }
             except Exception as exc:
                 rep.steps["neo4j_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # Sprint B — G → markdown wiki 파생 뷰 (architecture v4.1 §4)
+        if ("wiki_mirror" in active_steps
+                and os.environ.get("WIKI_MIRROR_ENABLED", "on").lower() in {"on", "1", "true"}):
+            try:
+                from gstar.mirror.wiki_view import emit_all
+                wres = emit_all(store)
+                rep.steps["wiki_mirror"] = {
+                    "entities": wres.entities,
+                    "topics": wres.topics,
+                    "sources": wres.sources,
+                    "index_written": wres.index_written,
+                    "errors": wres.errors[:3],
+                }
+            except Exception as exc:
+                rep.steps["wiki_mirror"] = {"error": f"{type(exc).__name__}: {exc}"}
 
         # Phase H9 — G → legacy bridge (신뢰도 3등급)
         if ("legacy_bridge" in active_steps
