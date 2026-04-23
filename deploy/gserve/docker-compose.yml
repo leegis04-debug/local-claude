@@ -20,9 +20,12 @@ services:
       # NAS 원문 저장소 — Phase A1 (읽기 전용). 컨테이너 내부에서 /nas/workspace 경로로 접근.
       # 호스트에 /mnt/nas/workspace 가 autofs CIFS 로 마운트되어야 함 (GSTAR_NAS_SRC 로 override 가능).
       - ${GSTAR_NAS_SRC:-/mnt/nas/workspace}:/nas/workspace:ro
+      # Sprint B — wiki 파생 뷰 전용 rw 볼륨. 원문 ro 와 완전 분리.
+      - ${GSTAR_WIKI_SRC:-/mnt/nas/workspace/wiki}:/nas/wiki:rw
     environment:
       GSTAR_HOME: /app/state
       GSTAR_NAS_ROOT: /nas/workspace
+      GSTAR_WIKI_OUT: /nas/wiki
       TZ: Asia/Seoul
       # Phase D: /search/fused + /notes(mirror) 가 기존 Gateway 로 호출할 때 사용
       GATEWAY_URL: ${GATEWAY_URL:-http://100.79.251.53:8000}
