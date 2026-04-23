@@ -10,10 +10,20 @@ LLM 없이 패턴 기반 1차. Phase B coherence_gate 가 후차 검증.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
+
+
+def _max_entities_per_fact() -> int:
+    # entity 폭증(특히 govsupport 사업계획서류의 "S바우처 4172 entities → 271k edges"
+    # 형태) edge O(N²) 를 상한으로 막는다. 기본 8 → fact 당 최대 28 co-occur edge.
+    try:
+        return int(os.environ.get("GSTAR_MAX_ENTITIES_PER_FACT", "8"))
+    except ValueError:
+        return 8
 
 
 @dataclass
@@ -101,10 +111,14 @@ def infer_relations_typed(
     pair_seen: dict[tuple[str, str], list[str]] = defaultdict(list)
     pair_rel: dict[tuple[str, str], str] = {}
 
+    max_ents = _max_entities_per_fact()
+    ent_freq: dict[str, int] = {eid: len(fids) for eid, fids in entity_id_to_facts.items()}
     for f_id, ents in fact_to_entities.items():
         text = fact_texts.get(f_id, "")
         if not text or len(ents) < 2:
             continue
+        if len(ents) > max_ents:
+            ents = sorted(ents, key=lambda e: (ent_freq.get(e, 0), e))[:max_ents]
         for a, b in combinations(sorted(ents), 2):
             ka = entity_types.get(a)
             kb = entity_types.get(b)
@@ -158,9 +172,15 @@ def _infer_basic(entity_id_to_facts: dict[str, set[str]]) -> list[InferredEdge]:
             fact_to_entities[f_id].append(ent_id)
 
     pair_weight: dict[tuple[str, str], list[str]] = defaultdict(list)
+    max_ents = _max_entities_per_fact()
+    # entity 등장 빈도 (entity_id_to_facts 크기) 으로 sort. rare 먼저 (signal 유지)
+    # + deterministic tiebreak.
+    ent_freq: dict[str, int] = {eid: len(fids) for eid, fids in entity_id_to_facts.items()}
     for f_id, ents in fact_to_entities.items():
         if len(ents) < 2:
             continue
+        if len(ents) > max_ents:
+            ents = sorted(ents, key=lambda e: (ent_freq.get(e, 0), e))[:max_ents]
         for a, b in combinations(sorted(ents), 2):
             pair_weight[(a, b)].append(f_id)
 
