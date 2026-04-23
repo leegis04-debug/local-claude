@@ -1,20 +1,22 @@
-"""Ollama /api/chat 래퍼.
+"""Ollama /api/chat + llama.cpp /v1/chat/completions (OpenAI-compatible) 통합 래퍼.
 
 아키텍처:
-- **작성 주체 (생성기)**: 4090 서버 (http://100.105.221.243:11434, 모델 `gemma4:a4b` 등).
-  P축 projection 의 summarizer·renderer·coherence_gate 에서 호출.
-- **선택기 (짧은 예/아니오)**: 로컬 또는 4090. Selector loop 의 judge.
+- **작성 주체 (생성기)**: 4090 서버 Ollama :11434 또는 llama.cpp :8081 (Qwen 14B Q5).
+- **선택기 (짧은 예/아니오)**: 로컬 또는 4090 :8082 llama.cpp (Gemma 3 4B Q4).
 - **G 운영 주체**: 미니 PC (http://100.79.251.53:9999, g-serve HTTP).
 
-기본값은 환경변수로 override 가능:
-- `OLLAMA_HOST`      — 전체 기본 Ollama 호스트
-- `GP_OLLAMA_HOST`   — projection 전용 override (작성 주체 = 4090)
+env:
+- `OLLAMA_HOST`        전체 기본 Ollama 호스트
+- `GP_OLLAMA_HOST`     projection 전용 override (Projector host)
+- `GP_LLM_API`         `ollama` (기본) | `openai` — llama.cpp server 쓰면 `openai`
+- `GP_SELECTOR_HOST`   selector 전용 host (llama.cpp :8082 등). 없으면 OLLAMA_HOST
+- `GP_SELECTOR_API`    selector 만 별도 API 스키마. 없으면 GP_LLM_API
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
@@ -25,8 +27,14 @@ _PROJECTION_OLLAMA_HOST = os.environ.get("GP_OLLAMA_HOST", "http://100.105.221.2
 
 
 def projection_host() -> str:
-    """Projection(생성) 전용 Ollama 엔드포인트. 기본: 4090."""
+    """Projection(생성) 전용 엔드포인트. 기본: 4090 Ollama. llama.cpp 로 전환
+    시 `GP_OLLAMA_HOST=http://100.105.221.243:8081` + `GP_LLM_API=openai`."""
     return os.environ.get("GP_OLLAMA_HOST", _PROJECTION_OLLAMA_HOST)
+
+
+def _default_api_schema() -> str:
+    v = os.environ.get("GP_LLM_API", "ollama").lower()
+    return "openai" if v in {"openai", "llamacpp", "llama.cpp", "v1"} else "ollama"
 
 
 class Judge(Protocol):
@@ -42,15 +50,37 @@ class OllamaChatClient:
     timeout_s: float = 30.0
     num_predict: int = 64
     temperature: float = 0.1
+    api_schema: str = field(default_factory=_default_api_schema)  # "ollama" | "openai"
 
     def judge(self, *, system: str, prompt: str) -> str:
         """짧은 응답을 끌어내는 chat 호출. 실패 시 HTTPError 전파.
 
-        `think=false` 기본: Gemma 4 thinking 모델은 default 가 thinking on 이라
-        `message.content` 가 비어있고 `message.thinking` 에만 답이 쓰인다. Projector/
-        Selector 모두 최종 출력만 필요하므로 thinking 을 끈다. `GP_THINK=on` env 로
-        재활성화 가능 (디버그·복잡 추론 필요 시).
+        api_schema=openai 는 llama.cpp server(`/v1/chat/completions`) 또는 OpenAI
+        호환 endpoint 호출. `num_predict` 는 `max_tokens`, `temperature` 그대로 전달.
+        Ollama 의 `think` 는 OpenAI 스키마에 없어서 무시.
         """
+        if self.api_schema == "openai":
+            body = {
+                "model": self.model,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": self.num_predict,
+                "temperature": self.temperature,
+            }
+            r = httpx.post(
+                f"{self.host}/v1/chat/completions", json=body, timeout=self.timeout_s,
+            )
+            r.raise_for_status()
+            data = r.json()
+            try:
+                return (data["choices"][0]["message"]["content"] or "").strip()
+            except Exception:
+                return ""
+
+        # Ollama /api/chat (기본)
         think = os.environ.get("GP_THINK", "off").lower() in {"on", "1", "true"}
         body = {
             "model": self.model,
