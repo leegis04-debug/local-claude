@@ -11,6 +11,8 @@ derived_view 레코드: (g_node_id, view='wiki', external_id=파일 상대경로
 env:
   GSTAR_WIKI_OUT  (기본 /nas/workspace/wiki  — 맥북 Obsidian vault 경로)
   GSTAR_WIKI_MAX_FACTS_PER_ENTITY  (entity 페이지당 fact 인용 상한, 기본 20)
+  GSTAR_WIKI_GIT_PUSH  (off | on. on 이면 emit 끝에 Gitea push. 초기 `git init`
+                        + `remote add origin <token URL>` 은 1회 수동.)
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,11 +57,56 @@ class WikiResult:
     topics: int = 0
     sources: int = 0
     index_written: bool = False
+    git_pushed: bool = False
     errors: list[str] = None
 
     def __post_init__(self) -> None:
         if self.errors is None:
             self.errors = []
+
+
+def _git_sync(out_dir: Path, result: WikiResult) -> None:
+    """GSTAR_WIKI_GIT_PUSH=on 일 때 wiki 디렉터리의 변경을 Gitea 로 push.
+    초기 설정(`git init` + `remote add origin`) 은 사용자가 1회 수동. 이후는 자동.
+    변경 없으면 조용히 skip."""
+    if os.environ.get("GSTAR_WIKI_GIT_PUSH", "off").lower() not in {"on", "1", "true"}:
+        return
+    try:
+        st = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(out_dir), capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:
+        result.errors.append(f"git status: {type(exc).__name__}: {exc}")
+        return
+    if st.returncode != 0:
+        result.errors.append(f"git status rc={st.returncode}: {st.stderr.strip()[:200]}")
+        return
+    if not st.stdout.strip():
+        return  # 변경 없음 — noise 감소 위해 empty commit 생성 안 함
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    msg = (
+        f"wiki mirror {ts} "
+        f"E={result.entities} T={result.topics} S={result.sources}"
+    )
+    for cmd in (
+        ["git", "add", "-A"],
+        ["git", "-c", "user.email=wiki-mirror@g", "-c", "user.name=wiki-mirror",
+         "commit", "-m", msg],
+        ["git", "push", "origin", "HEAD"],
+    ):
+        try:
+            r = subprocess.run(cmd, cwd=str(out_dir), capture_output=True,
+                               text=True, timeout=180)
+        except Exception as exc:
+            result.errors.append(f"{' '.join(cmd[:3])}: {type(exc).__name__}: {exc}")
+            return
+        if r.returncode != 0:
+            result.errors.append(
+                f"{' '.join(cmd[:3])} rc={r.returncode}: {r.stderr.strip()[:200]}"
+            )
+            return
+    result.git_pushed = True
 
 
 def _now_iso() -> str:
@@ -386,4 +434,6 @@ def emit_all(store: DuckStore, out_dir: Path | None = None) -> WikiResult:
 
     _render_index(result.entities, result.topics, result.sources, out)
     result.index_written = True
+
+    _git_sync(out, result)
     return result
