@@ -787,6 +787,25 @@ class WikiInboxResponse(BaseModel):
     errors: list[str]
 
 
+class ReconcileResponse(BaseModel):
+    scanned: int
+    matched: int
+    skipped: int
+
+
+@app.post("/worker/reconcile_entity_canonical", response_model=ReconcileResponse)
+def worker_reconcile_entity_canonical():
+    """Sprint C D1 — entity_canonical.node_id=NULL 을 canonical_name → node.text
+    매칭으로 backfill. 1회성 cleanup 또는 주기 실행 용."""
+    from gstar.entity.linker import reconcile_canonical_node_ids
+    s = get_state()
+    try:
+        r = reconcile_canonical_node_ids(s.store)
+    except Exception as exc:
+        raise HTTPException(500, f"reconcile failed: {exc}")
+    return ReconcileResponse(**r)
+
+
 @app.post("/worker/wiki_inbox", response_model=WikiInboxResponse)
 def worker_wiki_inbox():
     """Sprint C #1 — wiki/_inbox/*.md 감지 → G 재흡수. LIGHT_STEPS 소속,

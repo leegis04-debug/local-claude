@@ -181,6 +181,22 @@ def _increment_mentions(store: DuckStore, canonical_id: str, delta: int = 1) -> 
     )
 
 
+def _lookup_existing_entity_node_id(store: DuckStore, canonical_name: str) -> str | None:
+    """Sprint C D1 — ingest 경로가 `Node(kind='entity')` 먼저 저장한 뒤
+    projection 에서 뒤늦게 linker 가 canonical 을 만드는 구조. 이름이 같은
+    entity node 가 이미 있으면 그 id 로 연결해서 `node_id` NULL 을 방지."""
+    if not canonical_name:
+        return None
+    try:
+        row = store._read_conn().execute(
+            "SELECT id FROM node WHERE kind='entity' AND text=? LIMIT 1",
+            [canonical_name],
+        ).fetchone()
+    except Exception:
+        return None
+    return row[0] if row else None
+
+
 def _create_canonical(
     store: DuckStore,
     canonical_name: str,
@@ -190,12 +206,13 @@ def _create_canonical(
     scope: str | None = None,
 ) -> CanonicalEntity:
     cid = _ulid()
+    node_id = _lookup_existing_entity_node_id(store, canonical_name)
     # 병렬 호출 race + ULID 시계분해능 엣지케이스 방어
     with store.lock:
         store.conn.execute(
             f"INSERT INTO entity_canonical ({_CANON_COLS}, node_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) ON CONFLICT DO NOTHING",
-            [cid, project_id, track, canonical_name, kind.value, scope, 1, _ts()],
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            [cid, project_id, track, canonical_name, kind.value, scope, 1, node_id, _ts()],
         )
     return CanonicalEntity(
         id=cid,
@@ -207,6 +224,39 @@ def _create_canonical(
         mentions=1,
         aliases=[],
     )
+
+
+def reconcile_canonical_node_ids(store: DuckStore) -> dict:
+    """기존 `entity_canonical.node_id=NULL` 을 canonical_name → node.text 매칭으로
+    backfill. `node.text` 인덱스 없어 per-row lookup 은 full scan × N 로 폭발.
+    전체 entity node 를 한 번에 로드해서 in-memory dict 로 O(n)."""
+    all_ents = store._read_conn().execute(
+        "SELECT id, text FROM node WHERE kind='entity'"
+    ).fetchall()
+    text_to_id: dict[str, str] = {}
+    for nid, text in all_ents:
+        # 같은 이름 여러 node 있으면 첫 번째 유지 (deterministic)
+        if text and text not in text_to_id:
+            text_to_id[text] = nid
+
+    rows = store._read_conn().execute(
+        "SELECT id, canonical_name FROM entity_canonical "
+        "WHERE node_id IS NULL AND canonical_name IS NOT NULL"
+    ).fetchall()
+    scanned = len(rows)
+    matched = 0
+    # 배치 UPDATE — 한 connection 안에서 순차 실행, lock 최소화
+    with store.lock:
+        for cid, name in rows:
+            nid = text_to_id.get(name)
+            if not nid:
+                continue
+            store.conn.execute(
+                "UPDATE entity_canonical SET node_id = ? WHERE id = ? AND node_id IS NULL",
+                [nid, cid],
+            )
+            matched += 1
+    return {"scanned": scanned, "matched": matched, "skipped": scanned - matched}
 
 
 def link(

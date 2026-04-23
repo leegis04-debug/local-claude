@@ -173,6 +173,12 @@ def _fetch_communities(store: DuckStore) -> list[dict]:
     return out
 
 
+def _skip_ns(name: str) -> bool:
+    """벤치·임시 네임스페이스 (`_bench_`, `_tmp_` prefix) 는 wiki 렌더 제외.
+    데이터는 DB 에 남아있지만 Obsidian graph 에 노이즈로 들어가지 않도록."""
+    return name.startswith("_bench_") or name.startswith("_tmp_")
+
+
 def _fetch_source_summary(store: DuckStore) -> list[dict]:
     rows = store._read_conn().execute(
         "SELECT source_namespace, kind, COUNT(*) FROM node GROUP BY source_namespace, kind"
@@ -180,6 +186,8 @@ def _fetch_source_summary(store: DuckStore) -> list[dict]:
     ns_stats: dict[str, dict[str, int]] = {}
     for ns, kind, cnt in rows:
         ns = ns or "_unknown"
+        if _skip_ns(ns):
+            continue
         ns_stats.setdefault(ns, {})[kind or "_unknown"] = int(cnt)
     return [{"namespace": ns, "stats": s} for ns, s in sorted(ns_stats.items())]
 
