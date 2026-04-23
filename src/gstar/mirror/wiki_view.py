@@ -116,18 +116,22 @@ def _now_iso() -> str:
 
 
 def _frontmatter(kind: str, title: str, extra: dict) -> str:
+    # 콜론·특수문자 포함 문자열은 YAML 파서가 mapping 으로 오인하므로 전부
+    # JSON double-quote 로 감싼다 (Quartz/Obsidian 모두 YAML 정합성 기대).
     lines = [
         "---",
-        f"view: wiki",
-        f"type: {kind}",
-        f"title: {title}",
+        "view: wiki",
+        f"type: {json.dumps(kind, ensure_ascii=False)}",
+        f"title: {json.dumps(title, ensure_ascii=False)}",
         f"generated_at: {_now_iso()}",
-        f"mirror_version: 1",
+        "mirror_version: 1",
     ]
     for k, v in extra.items():
         if isinstance(v, list):
             lines.append(f"{k}: {json.dumps(v, ensure_ascii=False)}")
-        elif isinstance(v, (int, float, bool)):
+        elif isinstance(v, bool):
+            lines.append(f"{k}: {'true' if v else 'false'}")
+        elif isinstance(v, (int, float)):
             lines.append(f"{k}: {v}")
         else:
             lines.append(f"{k}: {json.dumps(str(v), ensure_ascii=False)}")

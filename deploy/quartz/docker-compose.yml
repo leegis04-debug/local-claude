@@ -1,0 +1,73 @@
+# Sprint C #3 — Quartz v4 외부 web graph view.
+# 플랜 v4 §5 Remote Vault.
+#
+#   builder: node 22, Quartz clone + npm ci + build → /public
+#   nginx:   정적 serve on :8080 (Meshnet 경유, Obsidian vault 의 web 버전)
+#
+# 첫 실행 시 builder 가 npm install + 전체 build (5~15분 예상). 이후 재시작은
+# 캐시된 node_modules 로 재빌드만 (1~3분). cron 으로 15분마다 rebuild.
+#
+# 배포:
+#   cd /home/ljw-op/local-claude/deploy/quartz
+#   docker compose up -d
+#   docker compose logs -f quartz-builder    # 첫 빌드 진행 상황
+
+services:
+  quartz-builder:
+    image: node:22-slim
+    container_name: quartz-builder
+    restart: unless-stopped
+    working_dir: /app/quartz
+    environment:
+      TZ: Asia/Seoul
+    volumes:
+      - ${QUARTZ_DATA_DIR:-/home/ljw-op/quartz-data}:/app
+      - ${QUARTZ_PUBLIC_DIR:-/home/ljw-op/quartz-public}:/public
+      - ${QUARTZ_CONTENT_DIR:-/mnt/nas/workspace/wiki}:/content:ro
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends git rsync cron ca-certificates >/dev/null
+        if [ ! -d /app/quartz/.git ]; then
+          echo "[quartz] first clone + npm ci (5~10분)"
+          git clone --depth 1 https://github.com/jackyzha0/quartz /app/quartz
+          cd /app/quartz && npm ci --no-audit --no-fund
+        fi
+        # content symlink (CIFS ro → quartz content/)
+        rm -rf /app/quartz/content
+        ln -s /content /app/quartz/content
+        # Quartz 는 --output 디렉터리를 rmdir 하므로 mount point /public 자체를
+        # 넘기면 EBUSY. container 내부 경로에 build → rsync 로 /public 에 배포.
+        echo "[quartz] initial build"
+        cd /app/quartz && npx quartz build --output /app/quartz/public && \
+          rsync -a --delete /app/quartz/public/ /public/ || \
+          echo "[quartz] build failed (first run may need config)"
+        cat > /etc/cron.d/quartz-rebuild <<'EOF'
+        */15 * * * * root cd /app/quartz && npx quartz build --output /app/quartz/public && rsync -a --delete /app/quartz/public/ /public/ >> /var/log/quartz.log 2>&1
+        EOF
+        chmod 0644 /etc/cron.d/quartz-rebuild
+        crontab /etc/cron.d/quartz-rebuild
+        echo "[quartz] cron installed — tailing for keepalive"
+        cron
+        tail -f /dev/null
+
+  quartz-nginx:
+    image: nginx:alpine
+    container_name: quartz-nginx
+    restart: unless-stopped
+    # host mode: Meshnet 인터페이스에 직접 바인딩 (Gitea/g-serve 와 동일 이유)
+    network_mode: host
+    environment:
+      TZ: Asia/Seoul
+    volumes:
+      - ${QUARTZ_PUBLIC_DIR:-/home/ljw-op/quartz-public}:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - quartz-builder
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
