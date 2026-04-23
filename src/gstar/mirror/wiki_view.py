@@ -68,12 +68,14 @@ class WikiResult:
 def _git_sync(out_dir: Path, result: WikiResult) -> None:
     """GSTAR_WIKI_GIT_PUSH=on 일 때 wiki 디렉터리의 변경을 Gitea 로 push.
     초기 설정(`git init` + `remote add origin`) 은 사용자가 1회 수동. 이후는 자동.
-    변경 없으면 조용히 skip."""
+    변경 없으면 조용히 skip. 컨테이너 root uid 와 CIFS uid 1000 소유권이
+    다르므로 safe.directory 를 인라인으로 지정 (container 전역 config 오염 방지)."""
     if os.environ.get("GSTAR_WIKI_GIT_PUSH", "off").lower() not in {"on", "1", "true"}:
         return
+    base = ["git", "-c", f"safe.directory={out_dir}"]
     try:
         st = subprocess.run(
-            ["git", "status", "--porcelain"],
+            base + ["status", "--porcelain"],
             cwd=str(out_dir), capture_output=True, text=True, timeout=30,
         )
     except Exception as exc:
@@ -90,20 +92,20 @@ def _git_sync(out_dir: Path, result: WikiResult) -> None:
         f"E={result.entities} T={result.topics} S={result.sources}"
     )
     for cmd in (
-        ["git", "add", "-A"],
-        ["git", "-c", "user.email=wiki-mirror@g", "-c", "user.name=wiki-mirror",
-         "commit", "-m", msg],
-        ["git", "push", "origin", "HEAD"],
+        base + ["add", "-A"],
+        base + ["-c", "user.email=wiki-mirror@g", "-c", "user.name=wiki-mirror",
+                "commit", "-m", msg],
+        base + ["push", "origin", "HEAD"],
     ):
         try:
             r = subprocess.run(cmd, cwd=str(out_dir), capture_output=True,
                                text=True, timeout=180)
         except Exception as exc:
-            result.errors.append(f"{' '.join(cmd[:3])}: {type(exc).__name__}: {exc}")
+            result.errors.append(f"{cmd[3]}: {type(exc).__name__}: {exc}")
             return
         if r.returncode != 0:
             result.errors.append(
-                f"{' '.join(cmd[:3])} rc={r.returncode}: {r.stderr.strip()[:200]}"
+                f"git {cmd[3]} rc={r.returncode}: {r.stderr.strip()[:200]}"
             )
             return
     result.git_pushed = True

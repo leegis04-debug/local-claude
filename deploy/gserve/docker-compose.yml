@@ -26,6 +26,9 @@ services:
       GSTAR_HOME: /app/state
       GSTAR_NAS_ROOT: /nas/workspace
       GSTAR_WIKI_OUT: /nas/wiki
+      # Sprint B — emit 끝에 Gitea 로 자동 push (remote URL 은 /nas/wiki/.git/config
+      # 에 token 포함해서 저장. 초기 push 는 수동 1회).
+      GSTAR_WIKI_GIT_PUSH: ${GSTAR_WIKI_GIT_PUSH:-on}
       TZ: Asia/Seoul
       # Phase D: /search/fused + /notes(mirror) 가 기존 Gateway 로 호출할 때 사용
       GATEWAY_URL: ${GATEWAY_URL:-http://100.79.251.53:8000}
