@@ -22,6 +22,10 @@ class FaissStore:
         else:
             self.index = faiss.IndexFlatIP(dim)
             self.ids = []
+        # id → row idx 역인덱스. 과거엔 _faiss_lookup_vector 가 list.index() O(n)
+        # 을 썼지만 ids 가 10만+ 되면 조회 1회당 full scan 이 돼 gravity 계산을
+        # 지배했다. dict 로 O(1).
+        self.id_to_idx: dict[str, int] = {nid: i for i, nid in enumerate(self.ids)}
 
     def __len__(self) -> int:
         return self.index.ntotal
@@ -29,6 +33,7 @@ class FaissStore:
     def add(self, node_id: str, vector: np.ndarray) -> None:
         vec = _normalize(vector.astype(np.float32).reshape(1, -1))
         self.index.add(vec)
+        self.id_to_idx[node_id] = len(self.ids)
         self.ids.append(node_id)
 
     def add_batch(self, node_ids: list[str], vectors: np.ndarray) -> None:
@@ -36,6 +41,9 @@ class FaissStore:
             raise ValueError("node_ids length must match vectors rows")
         vec = _normalize(vectors.astype(np.float32))
         self.index.add(vec)
+        base = len(self.ids)
+        for i, nid in enumerate(node_ids):
+            self.id_to_idx[nid] = base + i
         self.ids.extend(node_ids)
 
     def search(self, vector: np.ndarray, k: int) -> list[tuple[str, float]]:

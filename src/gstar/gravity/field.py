@@ -31,9 +31,8 @@ class GravityEntry:
 
 def _faiss_lookup_vector(faiss: FaissStore, node_id: str) -> np.ndarray | None:
     """FaissStore 내부 id 매핑으로 벡터 반환. 없으면 None."""
-    try:
-        idx = faiss.ids.index(node_id)
-    except ValueError:
+    idx = faiss.id_to_idx.get(node_id)
+    if idx is None:
         return None
     return np.asarray(faiss.index.reconstruct(idx), dtype=np.float32)
 
