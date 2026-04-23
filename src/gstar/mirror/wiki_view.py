@@ -134,39 +134,84 @@ def _fetch_source_summary(store: DuckStore) -> list[dict]:
     return [{"namespace": ns, "stats": s} for ns, s in sorted(ns_stats.items())]
 
 
-def _entity_facts(store: DuckStore, entity_node_id: str | None, limit: int) -> list[dict]:
-    """entity 노드에서 evidence_of edge 로 연결된 fact 상위 N개."""
-    if not entity_node_id:
-        return []
+def _resolve_entity_node_ids(store: DuckStore, canonical_name: str, fallback: str | None) -> list[str]:
+    """entity_canonical.node_id 가 NULL 인 경우가 다수 (linker 가 NULL 로 INSERT 하고
+    나중에 업데이트되지 않는 경로). canonical_name 으로 node(kind='entity').text
+    매칭하여 보강. 여러 namespace 에서 같은 이름 entity 가 있을 수 있으니 list 로."""
+    ids: list[str] = []
+    if fallback:
+        ids.append(fallback)
+    if not canonical_name:
+        return ids
     try:
         rows = store._read_conn().execute(
-            "SELECT e.dst, n.text FROM edge e "
+            "SELECT id FROM node WHERE kind = 'entity' AND text = ?",
+            [canonical_name],
+        ).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        nid = r[0]
+        if nid and nid not in ids:
+            ids.append(nid)
+    return ids
+
+
+def _entity_facts(store: DuckStore, node_ids: list[str], limit: int) -> list[dict]:
+    """entity node 들에서 evidence_of edge 로 연결된 fact 상위 N개 (합집합)."""
+    if not node_ids:
+        return []
+    placeholders = ",".join(["?"] * len(node_ids))
+    try:
+        rows = store._read_conn().execute(
+            f"SELECT e.dst, n.text FROM edge e "
             "JOIN node n ON n.id = e.dst "
-            "WHERE e.src = ? AND e.kind = 'evidence_of' AND n.kind = 'fact' "
-            "LIMIT ?",
-            [entity_node_id, limit],
+            f"WHERE e.src IN ({placeholders}) AND e.kind = 'evidence_of' "
+            "AND n.kind = 'fact' LIMIT ?",
+            list(node_ids) + [limit],
         ).fetchall()
     except Exception:
         return []
     return [{"fact_id": r[0], "text": r[1] or ""} for r in rows]
 
 
-def _related_entities(store: DuckStore, entity_node_id: str | None, limit: int = 10) -> list[str]:
+def _related_entities(store: DuckStore, node_ids: list[str], limit: int = 10) -> list[str]:
     """co_occurs edge 로 연결된 상위 entity (canonical_name)."""
-    if not entity_node_id:
+    if not node_ids:
         return []
+    placeholders = ",".join(["?"] * len(node_ids))
+    # 2-step: 이웃 node id 목록 → canonical_name lookup (canonical 측의 node_id
+    # 가 NULL 이면 node.text 로 최후 폴백).
     try:
         rows = store._read_conn().execute(
-            "SELECT other.id, ec.canonical_name FROM ("
-            "  SELECT CASE WHEN src = ? THEN dst ELSE src END AS id, weight "
-            "  FROM edge WHERE (src = ? OR dst = ?) AND kind = 'co_occurs' "
-            "  ORDER BY weight DESC LIMIT ?"
-            ") other JOIN entity_canonical ec ON ec.node_id = other.id",
-            [entity_node_id, entity_node_id, entity_node_id, limit],
+            f"SELECT CASE WHEN src IN ({placeholders}) THEN dst ELSE src END AS other_id, weight "
+            f"FROM edge WHERE (src IN ({placeholders}) OR dst IN ({placeholders})) "
+            "AND kind = 'co_occurs' ORDER BY weight DESC LIMIT ?",
+            list(node_ids) * 3 + [limit * 4],
         ).fetchall()
     except Exception:
         return []
-    return [r[1] for r in rows if r[1]]
+    seen: set[str] = set()
+    out: list[str] = []
+    own = set(node_ids)
+    for other_id, _w in rows:
+        if other_id in own or other_id in seen:
+            continue
+        seen.add(other_id)
+        try:
+            r2 = store._read_conn().execute(
+                "SELECT COALESCE(ec.canonical_name, n.text) FROM node n "
+                "LEFT JOIN entity_canonical ec ON ec.node_id = n.id "
+                "WHERE n.id = ?",
+                [other_id],
+            ).fetchone()
+        except Exception:
+            continue
+        if r2 and r2[0]:
+            out.append(r2[0])
+            if len(out) >= limit:
+                break
+    return out
 
 
 def _render_entity(store: DuckStore, ent: dict, out_dir: Path) -> Path | None:
@@ -176,12 +221,13 @@ def _render_entity(store: DuckStore, ent: dict, out_dir: Path) -> Path | None:
     fname = _slug(name) + ".md"
     path = out_dir / "entities" / fname
     path.parent.mkdir(parents=True, exist_ok=True)
-    facts = _entity_facts(store, ent["node_id"], _max_facts_per_entity())
-    related = _related_entities(store, ent["node_id"])
+    node_ids = _resolve_entity_node_ids(store, name, ent.get("node_id"))
+    facts = _entity_facts(store, node_ids, _max_facts_per_entity())
+    related = _related_entities(store, node_ids)
     fact_ids = [f["fact_id"] for f in facts]
     fm = _frontmatter("entity", name, {
         "g_entity_id": ent["id"],
-        "g_node_id": ent["node_id"] or "",
+        "g_node_ids": node_ids,
         "g_fact_sources": fact_ids,
         "kind": ent["kind"],
         "mentions": ent["mentions"],
@@ -313,7 +359,11 @@ def emit_all(store: DuckStore, out_dir: Path | None = None) -> WikiResult:
             if p is None:
                 continue
             rel = str(p.relative_to(out))
-            _record_derived(store, ent["node_id"], rel)
+            # derived_view 는 anchor 가 1개여야 하므로 fallback 체인 첫 값 사용
+            anchor = ent["node_id"] or (
+                _resolve_entity_node_ids(store, ent["canonical_name"], None)[:1] or [None]
+            )[0]
+            _record_derived(store, anchor, rel)
             result.entities += 1
         except Exception as exc:
             result.errors.append(f"entity {ent.get('canonical_name')}: {exc}")
