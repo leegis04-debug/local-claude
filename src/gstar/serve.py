@@ -727,6 +727,43 @@ def faiss_save():
     return {"ok": True, "ntotal": int(s.faiss.index.ntotal)}
 
 
+# -------- /mirror/wiki/emit (Sprint B: G → markdown 파생 뷰) --------
+
+
+class WikiEmitRequest(BaseModel):
+    out_dir: str | None = None          # 기본 env GSTAR_WIKI_OUT
+
+
+class WikiEmitResponse(BaseModel):
+    out_dir: str
+    entities: int
+    topics: int
+    sources: int
+    index_written: bool
+    errors: list[str]
+
+
+@app.post("/mirror/wiki/emit", response_model=WikiEmitResponse)
+def mirror_wiki_emit(req: WikiEmitRequest):
+    from pathlib import Path as _P
+    from gstar.mirror.wiki_view import emit_all, _out_dir
+
+    s = get_state()
+    out = _P(req.out_dir) if req.out_dir else _out_dir()
+    try:
+        r = emit_all(s.store, out)
+    except Exception as exc:
+        raise HTTPException(500, f"wiki emit failed: {exc}")
+    return WikiEmitResponse(
+        out_dir=str(out),
+        entities=r.entities,
+        topics=r.topics,
+        sources=r.sources,
+        index_written=r.index_written,
+        errors=r.errors,
+    )
+
+
 # -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------
 
 
