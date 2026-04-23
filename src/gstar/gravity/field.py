@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -20,6 +21,15 @@ from gstar.gravity import score as S
 from gstar.schema import Goal, Node
 from gstar.storage.duckdb_store import DuckStore
 from gstar.storage.faiss_index import FaissStore
+
+
+def _max_candidates() -> int:
+    """adjacency 확장 후 gravity loop 가 처리할 최대 후보 수. entity-dense
+    query 에서 후보가 수천개로 폭발해 fused_search 가 20s+ 가 되는 문제 완화."""
+    try:
+        return int(os.environ.get("GSTAR_GRAVITY_MAX_CANDIDATES", "800"))
+    except ValueError:
+        return 800
 
 
 @dataclass
@@ -63,12 +73,22 @@ def compute_gravity(
     # (과거엔 후보마다 `edges_of` 를 따로 호출해 N회 DB 왕복 → batch 로 1회).
     edge_map = store.edges_of_many(list(candidate_ids))
     adjacency: dict[str, set[str]] = {}
+    expanded: set[str] = set()
     for nid in list(candidate_ids):
         edges = edge_map.get(nid, [])
         nbrs = {(e.dst if e.src == nid else e.src) for e in edges}
         adjacency[nid] = nbrs
-        # centrality 계산용으로 이웃도 후보에 포함
-        candidate_ids |= nbrs
+        # centrality 계산용으로 이웃도 후보에 포함 (별도 set 에 모아서 상한 적용)
+        expanded |= nbrs
+
+    # entity-dense query 에선 expanded 가 수천~수만 → gravity 루프 비용 폭발.
+    # seed_ids + candidate_hits (FAISS 유사도 상위) 는 항상 유지, 확장분은 상한까지만.
+    max_cand = _max_candidates()
+    budget = max(0, max_cand - len(candidate_ids))
+    if budget > 0 and expanded:
+        # seed 를 우선하면 already in candidate_ids. nbrs 중 기존 후보 아닌 것만 budget 만큼 추가.
+        extra = [n for n in expanded if n not in candidate_ids][:budget]
+        candidate_ids |= set(extra)
 
     # 3) 모든 후보의 노드·반복선택률도 batch 로 미리 가져온다.
     node_map = store.get_nodes_many(list(candidate_ids))

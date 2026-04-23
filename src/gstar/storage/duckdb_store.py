@@ -354,14 +354,22 @@ class DuckStore:
 
         반환: {node_id: [edge, ...]}. 입력에 없는 id 는 key 없음. 방향 무관 —
         한 edge 가 `src`/`dst` 양쪽에 매칭되는 경우 양쪽 key 의 리스트에 들어간다
-        (`edges_of` 와 동일 동작)."""
+        (`edges_of` 와 동일 동작).
+
+        DuckDB 는 `WHERE src IN (...) OR dst IN (...)` 에서 OR 때문에 src/dst
+        index 를 동시에 쓰지 못하고 full scan 으로 떨어지는 경우가 있다. edge
+        테이블 100만+ 규모에서 fused_search 병목이 돼서 UNION ALL 로 분리 —
+        두 side 각각 index 사용."""
         if not node_ids:
             return {}
         uniq = list(set(node_ids))
         placeholders = ",".join(["?"] * len(uniq))
         sql = (
             "SELECT id, src, dst, kind, weight, evidence_json, created_at "
-            f"FROM edge WHERE src IN ({placeholders}) OR dst IN ({placeholders})"
+            f"FROM edge WHERE src IN ({placeholders}) "
+            "UNION ALL "
+            "SELECT id, src, dst, kind, weight, evidence_json, created_at "
+            f"FROM edge WHERE dst IN ({placeholders})"
         )
         try:
             rows = self._read_conn().execute(sql, uniq + uniq).fetchall()
@@ -369,8 +377,13 @@ class DuckStore:
             return {}
         id_set = set(uniq)
         result: dict[str, list[Edge]] = {nid: [] for nid in uniq}
+        seen: set[str] = set()
         for r in rows:
             edge = _row_to_edge(r)
+            # UNION ALL 은 src/dst 양쪽에 걸친 edge 를 중복 반환할 수 있다
+            if edge.id in seen:
+                continue
+            seen.add(edge.id)
             if edge.src in id_set:
                 result[edge.src].append(edge)
             if edge.dst in id_set and edge.dst != edge.src:
