@@ -78,6 +78,39 @@ async def lifespan(app: FastAPI):
             _ = s.embedder
         except Exception:
             pass
+
+    # D2 warmup — FAISS mmap I/O + DuckDB block cache / query plan 을 미리
+    # 데운다. cold 첫 fused_search 9~20s → ~200ms 목표. SBERT preload 만으론
+    # 부족 (FAISS IndexFlatIP brute-force 첫 scan + edges_of_many/get_nodes_many
+    # DuckDB 쿼리 plan cache 가 비어있어 3~5초 추가됨).
+    if os.environ.get("GSTAR_WARMUP_SEARCH", "on").lower() not in ("0", "off", "false", "no"):
+        try:
+            from gstar.gravity.field import compute_gravity
+            from gstar.schema import Goal as _Goal
+            import time as _time
+            t0 = _time.time()
+            warm_query = os.environ.get("GSTAR_WARMUP_QUERY", "warmup")
+            goal_emb = s.embedder.encode([warm_query])[0]
+            tmp_goal = _Goal(text=warm_query, kind="proposal")
+            entries = compute_gravity(tmp_goal, goal_emb, s.store, s.faiss, s.weights)
+            # list_rejected · get_node hot path 도 warmup
+            try:
+                _ = s.store.list_rejected(limit=10000)
+            except Exception:
+                pass
+            for e in entries[:10]:
+                try:
+                    s.store.get_node(e.node_id)
+                except Exception:
+                    pass
+            print(
+                f"[warmup] fused_search primed in {_time.time()-t0:.2f}s "
+                f"({len(entries)} gravity entries, faiss_ntotal={s.faiss.index.ntotal})",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[warmup] skipped: {type(exc).__name__}: {exc}", flush=True)
+
     yield
     if _state is not None:
         _state.close()
