@@ -270,6 +270,7 @@ def _related_entities(store: DuckStore, node_ids: list[str], limit: int = 10) ->
     except Exception:
         return []
     seen: set[str] = set()
+    seen_name: set[str] = set()
     out: list[str] = []
     own = set(node_ids)
     for other_id, _w in rows:
@@ -286,7 +287,13 @@ def _related_entities(store: DuckStore, node_ids: list[str], limit: int = 10) ->
         except Exception:
             continue
         if r2 and r2[0]:
-            out.append(r2[0])
+            nm = r2[0]
+            # canonical_name level dedup — 여러 node_id 가 같은 entity 로
+            # 정규화된 경우 동일 이름 중복 방지 (예: `AI` 가 3번 찍히는 버그).
+            if nm in seen_name:
+                continue
+            seen_name.add(nm)
+            out.append(nm)
             if len(out) >= limit:
                 break
     return out
