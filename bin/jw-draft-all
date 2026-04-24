@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# jw-draft-all — jw/re 7 stage Layer-1 draft 일괄 생성 (토큰 폭탄 mitigation).
+#
+# 배경: 각 jw/re skill 의 Step 0 가 호출 시마다 gjw/gre 를 1회씩 4090 llama.cpp
+# 로 실행한다 (CLAUDE.md 규약). 풀 워크플로우 7 stage 면 7× 콜 + Claude 컨텍스트
+# 부담 7×. 본 스크립트는 4090 llama.cpp 가 한 번 워밍된 상태에서 stage 7개를
+# 연속 호출 → Claude 는 이후 _versions/<stage>-v1-gemma.md 가 이미 있는 상태로
+# refine 만 수행 → Step 0 자동 호출 부담 제거.
+#
+# 사용법:
+#   bin/jw-draft-all <project-dir> [jw|re] [topic] [--mode <classic|sv|svr|svrr>]
+#                                  [--limit N] [--dry-run]
+#
+# 기본값:
+#   - track = jw
+#   - topic = 빈 문자열 (각 stage 가 이전 stage 산출물 우선 참조)
+#   - mode  = svrr (기존 P축 default)
+#   - limit = 없음 (gjw/gre 의 GP_QUESTION_LIMIT 미설정)
+#
+# 종료 코드:
+#   0 = 모든 stage 성공
+#   1 = 사용법 오류
+#   2 = 일부 stage 실패 (다음 stage 는 계속 시도, 종료 시 실패 stage 목록 출력)
+
+set -eu
+
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat >&2 <<'USAGE'
+jw-draft-all — jw/re 7 stage Layer-1 draft 일괄 생성
+
+사용:
+  bin/jw-draft-all <project-dir> [jw|re] [topic] [options]
+
+options:
+  --mode <classic|sv|svr|svrr>  draft 모드 (기본 svrr)
+  --limit N                     stage 별 question top N (없으면 전체)
+  --dry-run                     실제 호출 안 하고 명령만 출력
+  --stages <list>               기본 7개 대신 지정 (콤마 구분)
+                                예: --stages idea,structure,spec
+  -h|--help                     이 도움말
+
+기본 stages (proposal 트랙):
+  idea → debate → structure → spec → risk-check → experiment-plan → proposal
+
+예:
+  bin/jw-draft-all ~/projects/agri-food-ai-gjw jw "KAMIS 시세예측"
+  bin/jw-draft-all ~/projects/deep-tect re --mode svr --limit 5
+  bin/jw-draft-all ~/projects/test jw "topic" --dry-run
+
+USAGE
+  exit 1
+}
+
+# --- arg parse ---
+project_dir=""
+track="jw"
+topic=""
+mode="svrr"
+limit=""
+dry_run="off"
+stages_csv="idea,debate,structure,spec,risk-check,experiment-plan,proposal"
+
+# 첫 positional: project_dir
+if [ $# -lt 1 ]; then usage; fi
+case "$1" in -h|--help) usage ;; esac
+project_dir="$1"; shift
+
+# 둘째 positional (있으면): track
+if [ $# -gt 0 ]; then
+  case "$1" in
+    jw|re) track="$1"; shift ;;
+  esac
+fi
+
+# 셋째 positional (있으면, --flag 가 아니면): topic
+if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
+  topic="$1"; shift
+fi
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode)         mode="$2"; shift 2 ;;
+    --mode=*)       mode="${1#--mode=}"; shift ;;
+    --limit)        limit="$2"; shift 2 ;;
+    --limit=*)      limit="${1#--limit=}"; shift ;;
+    --dry-run)      dry_run="on"; shift ;;
+    --stages)       stages_csv="$2"; shift 2 ;;
+    --stages=*)     stages_csv="${1#--stages=}"; shift ;;
+    -h|--help)      usage ;;
+    *) echo "unknown arg: $1" >&2; usage ;;
+  esac
+done
+
+# --- validation ---
+case "$track" in
+  jw) bin_name="gjw" ;;
+  re) bin_name="gre" ;;
+  *)  echo "track must be jw or re (got: $track)" >&2; exit 1 ;;
+esac
+
+bin_path="$_dir/$bin_name"
+if [ ! -x "$bin_path" ]; then
+  echo "missing or not executable: $bin_path" >&2
+  exit 1
+fi
+
+if [ ! -d "$project_dir" ]; then
+  echo "project dir not found: $project_dir" >&2
+  echo "(create with /asst:project <name> $track first)" >&2
+  exit 1
+fi
+
+# --- run ---
+IFS=',' read -ra stages <<< "$stages_csv"
+
+echo "[jw-draft-all] track=$track project=$project_dir mode=$mode topic='${topic}' stages=${#stages[@]}"
+
+failed=()
+ok=()
+ts_start=$(date +%s)
+
+for stage in "${stages[@]}"; do
+  stage="${stage// /}"  # trim spaces
+  [ -z "$stage" ] && continue
+
+  echo
+  echo "================================================================="
+  echo "[stage] $stage  ($(date +%H:%M:%S))"
+  echo "================================================================="
+
+  cmd=("$bin_path" "$stage")
+  [ -n "$topic" ] && cmd+=("$topic")
+  cmd+=(--project "$project_dir" --mode "$mode")
+  [ -n "$limit" ] && cmd+=(--limit "$limit")
+
+  if [ "$dry_run" = "on" ]; then
+    echo "(dry-run) ${cmd[*]}"
+    ok+=("$stage")
+    continue
+  fi
+
+  if "${cmd[@]}"; then
+    ok+=("$stage")
+  else
+    rc=$?
+    echo "[stage $stage] failed (rc=$rc) — 계속 진행" >&2
+    failed+=("$stage")
+  fi
+done
+
+ts_end=$(date +%s)
+echo
+echo "================================================================="
+echo "[jw-draft-all] done in $((ts_end - ts_start))s"
+echo "  ok     : ${#ok[@]}  (${ok[*]})"
+echo "  failed : ${#failed[@]} (${failed[*]:-})"
+echo "================================================================="
+
+if [ ${#failed[@]} -gt 0 ]; then
+  exit 2
+fi
+exit 0
