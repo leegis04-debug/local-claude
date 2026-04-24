@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -21,7 +22,7 @@ class StageRole:
     summary_depth: SummaryDepth
     section_schema: str                      # template.py 의 스키마 이름
     coherence_retries: int
-    ollama_model: str = "gemma4:26b-a4b-it-q4_K_M"
+    ollama_model: str = os.environ.get("PROJECTOR_MODEL", "qwen2.5-14b")
     system_prompt: str = ""
     max_prompt_chars: int = 4500
     required_fact_kinds: list[str] = field(default_factory=list)
