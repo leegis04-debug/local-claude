@@ -298,6 +298,64 @@ class GClient:
             params["project_id"] = project_id
         return self.http.get("/communities", params=params).raise_for_status().json()
 
+    def citations_save(
+        self,
+        *,
+        project: str,
+        stage: str,
+        content: str,
+        version: str | None = None,
+        title: str | None = None,
+        clearance_token: str | None = None,
+        consistency: int | None = None,
+        file_path: str | None = None,
+        line_count: int | None = None,
+        wip_files: list[str] | None = None,
+        decisions: list[str] | None = None,
+        tags: list[str] | None = None,
+        source: str = "skill",
+        timeout: float = 30.0,
+    ) -> dict:
+        """Sprint C (2026-04-24) — 산출물 전문 + 메타데이터 G 저장. content_hash dedup.
+
+        Gateway `/citations/save` dead 대체. 반환: `{id, deduped, content_hash, project, stage}`.
+        """
+        body: dict = {
+            "project": project,
+            "stage": stage,
+            "content": content,
+            "source": source,
+            "wip_files": wip_files or [],
+            "decisions": decisions or [],
+            "tags": tags or [],
+        }
+        for k, v in (
+            ("version", version), ("title", title),
+            ("clearance_token", clearance_token),
+            ("consistency", consistency),
+            ("file_path", file_path), ("line_count", line_count),
+        ):
+            if v is not None:
+                body[k] = v
+        r = self.http.post("/citations/save", json=body, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def citations_list(
+        self, project: str, *, stage: str | None = None, limit: int = 50,
+        timeout: float = 10.0,
+    ) -> list[dict]:
+        params: dict = {"project": project, "limit": limit}
+        if stage:
+            params["stage"] = stage
+        try:
+            r = self.http.get("/citations/list", params=params, timeout=timeout)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("items", []) if isinstance(data, dict) else []
+        except Exception:
+            return []
+
     def wiki_search(
         self,
         query: str,

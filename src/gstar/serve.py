@@ -1105,6 +1105,194 @@ def wiki_inbox_write(req: WikiInboxWriteRequest):
     )
 
 
+# -------- /citations/save (Sprint C 2026-04-24 — Gateway 대체) --------
+
+
+class CitationSaveRequest(BaseModel):
+    project: str
+    stage: str
+    version: str | None = None
+    title: str | None = None
+    clearance_token: str | None = None
+    consistency: int | None = None             # 0~100
+    file_path: str | None = None
+    line_count: int | None = None
+    wip_files: list[str] = []
+    decisions: list[str] = []
+    tags: list[str] = []
+    content: str                               # 산출물 전문
+    source: str = "skill"
+
+
+class CitationSaveResponse(BaseModel):
+    id: str
+    deduped: bool                              # 동일 content_hash 존재해 재사용한 경우
+    content_hash: str
+    project: str
+    stage: str
+
+
+@app.post("/citations/save", response_model=CitationSaveResponse)
+def citations_save(req: CitationSaveRequest):
+    """산출물 전문 + 메타데이터 저장. content_hash 로 dedup (동일 내용 재저장 시 기존 id 반환).
+
+    Gateway `/citations/save` 대체. G server 단독으로 작동, 인증 불필요.
+    """
+    import hashlib
+    from datetime import datetime as _dt
+
+    from gstar.entity.linker import _ulid  # 기존 ULID helper 재활용
+
+    if not req.content or not req.content.strip():
+        raise HTTPException(400, "content must be non-empty")
+    if not req.project.strip() or not req.stage.strip():
+        raise HTTPException(400, "project and stage required")
+
+    ch = hashlib.sha256(req.content.encode("utf-8")).hexdigest()
+    s = get_state()
+
+    # dedup: 동일 content_hash 있으면 그 id 반환 (재저장 없음)
+    with s.store.lock:
+        existing = s.store.conn.execute(
+            "SELECT id FROM citation_artifact WHERE content_hash = ? LIMIT 1",
+            [ch],
+        ).fetchone()
+    if existing:
+        return CitationSaveResponse(
+            id=existing[0],
+            deduped=True,
+            content_hash=ch,
+            project=req.project,
+            stage=req.stage,
+        )
+
+    cid = _ulid()
+    with s.store.lock:
+        s.store.conn.execute(
+            """INSERT INTO citation_artifact (
+                id, project, stage, version, title, clearance_token,
+                consistency, file_path, line_count,
+                wip_files_json, decisions_json, tags_json,
+                content, content_hash, source, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                cid, req.project, req.stage, req.version, req.title,
+                req.clearance_token, req.consistency, req.file_path,
+                req.line_count,
+                json.dumps(req.wip_files, ensure_ascii=False),
+                json.dumps(req.decisions, ensure_ascii=False),
+                json.dumps(req.tags, ensure_ascii=False),
+                req.content, ch, req.source,
+                _dt.utcnow(),
+            ],
+        )
+    return CitationSaveResponse(
+        id=cid,
+        deduped=False,
+        content_hash=ch,
+        project=req.project,
+        stage=req.stage,
+    )
+
+
+class CitationListItem(BaseModel):
+    id: str
+    project: str
+    stage: str
+    version: str | None
+    title: str | None
+    consistency: int | None
+    line_count: int | None
+    content_hash: str
+    created_at: str
+
+
+class CitationListResponse(BaseModel):
+    project: str
+    count: int
+    items: list[CitationListItem]
+
+
+@app.get("/citations/list", response_model=CitationListResponse)
+def citations_list(project: str, stage: str | None = None, limit: int = 50):
+    """project(+stage) 로 citation 목록 조회. content 제외 (용량 절감)."""
+    s = get_state()
+    conn = s.store._read_conn()
+    if stage:
+        rows = conn.execute(
+            """SELECT id, project, stage, version, title, consistency, line_count,
+                      content_hash, created_at
+               FROM citation_artifact
+               WHERE project = ? AND stage = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            [project, stage, max(1, min(limit, 500))],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, project, stage, version, title, consistency, line_count,
+                      content_hash, created_at
+               FROM citation_artifact
+               WHERE project = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            [project, max(1, min(limit, 500))],
+        ).fetchall()
+    items = [
+        CitationListItem(
+            id=r[0], project=r[1], stage=r[2], version=r[3], title=r[4],
+            consistency=r[5], line_count=r[6], content_hash=r[7],
+            created_at=r[8].isoformat(timespec="seconds") if r[8] else "",
+        )
+        for r in rows
+    ]
+    return CitationListResponse(project=project, count=len(items), items=items)
+
+
+class CitationGetResponse(BaseModel):
+    id: str
+    project: str
+    stage: str
+    version: str | None
+    title: str | None
+    clearance_token: str | None
+    consistency: int | None
+    file_path: str | None
+    line_count: int | None
+    wip_files: list[str]
+    decisions: list[str]
+    tags: list[str]
+    content: str
+    content_hash: str
+    source: str
+    created_at: str
+
+
+@app.get("/citations/get", response_model=CitationGetResponse)
+def citations_get(id: str):
+    """단일 citation 전문 조회."""
+    s = get_state()
+    row = s.store._read_conn().execute(
+        """SELECT id, project, stage, version, title, clearance_token,
+                  consistency, file_path, line_count,
+                  wip_files_json, decisions_json, tags_json,
+                  content, content_hash, source, created_at
+           FROM citation_artifact WHERE id = ?""",
+        [id],
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, f"not found: {id}")
+    return CitationGetResponse(
+        id=row[0], project=row[1], stage=row[2], version=row[3], title=row[4],
+        clearance_token=row[5], consistency=row[6], file_path=row[7],
+        line_count=row[8],
+        wip_files=json.loads(row[9] or "[]"),
+        decisions=json.loads(row[10] or "[]"),
+        tags=json.loads(row[11] or "[]"),
+        content=row[12], content_hash=row[13], source=row[14],
+        created_at=row[15].isoformat(timespec="seconds") if row[15] else "",
+    )
+
+
 # -------- /ingest/neo4j (Phase A3: Neo4j dump → entity + edge) --------
 
 

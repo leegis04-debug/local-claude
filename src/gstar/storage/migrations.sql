@@ -213,3 +213,34 @@ INSERT INTO relation_type (name, description, applies_to_tracks) VALUES
 ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_version (version) VALUES (3) ON CONFLICT DO NOTHING;
+
+-- ========================================================================
+-- Schema v4 — Sprint C citations (2026-04-24)
+-- Gateway /citations/save dead 대체. 산출물 전문 + 메타데이터 저장.
+-- ========================================================================
+
+CREATE TABLE IF NOT EXISTS citation_artifact (
+    id                VARCHAR PRIMARY KEY,
+    project           VARCHAR NOT NULL,
+    stage             VARCHAR NOT NULL,
+    version           VARCHAR,
+    title             VARCHAR,
+    clearance_token   VARCHAR,
+    consistency       INTEGER,                   -- 0~100 검증 점수
+    file_path         VARCHAR,                   -- project 내 상대 경로
+    line_count        INTEGER,
+    wip_files_json    VARCHAR NOT NULL DEFAULT '[]',
+    decisions_json    VARCHAR NOT NULL DEFAULT '[]',
+    tags_json         VARCHAR NOT NULL DEFAULT '[]',
+    content           VARCHAR NOT NULL,           -- 산출물 전문
+    content_hash      VARCHAR NOT NULL,           -- dedupe key
+    source            VARCHAR NOT NULL DEFAULT 'skill',
+    created_at        TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cite_project       ON citation_artifact(project);
+CREATE INDEX IF NOT EXISTS idx_cite_project_stage ON citation_artifact(project, stage);
+CREATE INDEX IF NOT EXISTS idx_cite_hash          ON citation_artifact(content_hash);
+CREATE INDEX IF NOT EXISTS idx_cite_created       ON citation_artifact(created_at);
+
+INSERT INTO schema_version (version) VALUES (4) ON CONFLICT DO NOTHING;
