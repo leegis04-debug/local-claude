@@ -789,14 +789,26 @@ class WikiInboxResponse(BaseModel):
 
 class ReconcileResponse(BaseModel):
     scanned: int
-    matched: int
-    skipped: int
+    matched_total: int
+    still_null: int
+    total: int
+    method: str
 
 
 @app.post("/worker/reconcile_entity_canonical", response_model=ReconcileResponse)
 def worker_reconcile_entity_canonical():
-    """Sprint C D1 — entity_canonical.node_id=NULL 을 canonical_name → node.text
-    매칭으로 backfill. 1회성 cleanup 또는 주기 실행 용."""
+    """Sprint C D1 — entity_canonical.node_id=NULL 을 CTAS 방식으로 backfill.
+
+    9f7645e 의 UPDATE 방식은 DuckDB ART 인덱스 stale entry 를 trigger 해
+    FatalException 유발. 2026-04-24 에 reconcile_canonical_node_ids() 를
+    CTAS (CREATE TABLE AS SELECT) + DROP/RENAME + 인덱스 재빌드 방식으로
+    전환해 in-place UPDATE 를 완전히 제거.
+
+    채움 전략 (COALESCE):
+      1) 기존 node_id 유지
+      2) canonical_name ↔ node.text 매칭
+      3) alias.alias_surface ↔ node.text 매칭 (surface form fallback)
+    """
     from gstar.entity.linker import reconcile_canonical_node_ids
     s = get_state()
     try:
