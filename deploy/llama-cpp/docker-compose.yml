@@ -1,0 +1,95 @@
+# 4090 llama.cpp server 2종 고정 배포 (2026-04-24).
+#
+# 배경:
+#   이전에는 `docker run` 수동 기동. 재부팅·컨테이너 rm 시 기동 인자를
+#   잊어버려 -c 8192 --parallel 4 (슬롯당 2048) 같은 잘못된 기본값으로
+#   재생성되면서 gre/gjw 가 context overflow 400 을 내며 13분+ hang 하는
+#   사고 발생. compose 로 고정해 재발 방지.
+#
+# 배포 (4090 호스트에서):
+#   scp -r deploy/llama-cpp/ 100.105.221.243:~/llama-cpp/
+#   ssh 100.105.221.243 "cd ~/llama-cpp && docker compose up -d"
+#
+# 재기동:
+#   docker compose -f ~/llama-cpp/docker-compose.yml restart
+#
+# VRAM 예산 (RTX 4090 / 24GB):
+#   qwen 14B Q5 (10GB) + KV Q8 16384ctx (~6GB) = ~16GB
+#   gemma 4B Q4 (3GB)  + KV Q8  8192ctx (~1GB) = ~ 4GB
+#   합계 ~20GB (SBERT 4090 동거 안 함 — 허브에 별도).
+#
+# 슬롯 설계:
+#   --parallel 2 (qwen) → 동시 2 요청. gre panel 4 persona 는 2 ×  2 배치
+#     로 처리됨 (ThreadPoolExecutor 내부 큐잉). 1 회 호출에 최대 8192 tokens.
+#   --parallel 4 (gemma) → selector 대량 yes/no 처리용 (tiny prompt).
+
+name: llama-cpp
+
+services:
+  llama-qwen:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-qwen
+    restart: unless-stopped
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /home/ljw/ggufs:/models:ro
+    command: >-
+      -m /models/Qwen2.5-14B-Instruct-Q5_K_M.gguf
+      --port 8081 --host 0.0.0.0
+      -ngl 99
+      -c 16384 --parallel 2
+      --cache-type-k q8_0 --cache-type-v q8_0
+      --threads 4
+      --alias qwen2.5-14b
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/v1/models"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  llama-gemma:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: llama-gemma
+    restart: unless-stopped
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - /home/ljw/ggufs:/models:ro
+    command: >-
+      -m /models/gemma-3-4b-it-Q4_K_M.gguf
+      --port 8082 --host 0.0.0.0
+      -ngl 99
+      -c 8192 --parallel 4
+      --cache-type-k q8_0 --cache-type-v q8_0
+      --threads 2
+      --alias gemma-3-4b
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8082/v1/models"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
