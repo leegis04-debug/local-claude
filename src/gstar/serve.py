@@ -926,6 +926,118 @@ def wiki_read(path: str):
     return WikiReadResponse(path=path, size=target.stat().st_size, content=content)
 
 
+# -------- Sprint C #C1 — /wiki/search (in-memory title index, emergence 우선조회용) --------
+
+
+class WikiSearchHit(BaseModel):
+    path: str
+    title: str
+    type: str               # entity | topic | source
+    score: float            # 0.0 ~ 1.0
+    excerpt: str            # 본문 앞부분 (최대 500자)
+
+
+class WikiSearchResponse(BaseModel):
+    query: str
+    count: int
+    items: list[WikiSearchHit]
+
+
+_WIKI_INDEX_CACHE: dict = {"built_at": 0.0, "entries": []}   # entries: [{path,type,title,body}]
+_WIKI_INDEX_TTL_S = 600.0
+
+
+def _wiki_index_build() -> list[dict]:
+    """wiki root 스캔해 {path,type,title,body} 리스트 생성. TTL 10분 캐시."""
+    import time as _t
+    import re as _re
+    now = _t.time()
+    if _WIKI_INDEX_CACHE["entries"] and now - _WIKI_INDEX_CACHE["built_at"] < _WIKI_INDEX_TTL_S:
+        return _WIKI_INDEX_CACHE["entries"]
+    root = _wiki_root()
+    if not root.exists():
+        _WIKI_INDEX_CACHE["entries"] = []
+        _WIKI_INDEX_CACHE["built_at"] = now
+        return []
+    entries: list[dict] = []
+    for subtype, subdir in (("entity", "entities"), ("topic", "topics"), ("source", "sources")):
+        d = root / subdir
+        if not d.exists():
+            continue
+        for p in d.rglob("*.md"):
+            try:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            title = ""
+            m = _re.search(r'^title:\s*"?([^"\n]+)"?\s*$', text, _re.M)
+            if m:
+                title = m.group(1).strip()
+            if not title:
+                m2 = _re.search(r"^#\s+(.+)$", text, _re.M)
+                if m2:
+                    title = m2.group(1).strip()
+            if not title:
+                title = p.stem
+            body_start = text.find("\n---\n", 3)
+            body = text[body_start + 5:] if body_start > 0 else text
+            entries.append({
+                "path": str(p.relative_to(root)),
+                "type": subtype,
+                "title": title,
+                "body": body[:1500],
+            })
+    _WIKI_INDEX_CACHE["entries"] = entries
+    _WIKI_INDEX_CACHE["built_at"] = now
+    return entries
+
+
+_HANGUL_RE = __import__("re").compile(r"[가-힣]{2,}|[A-Za-z0-9]{2,}")
+
+
+def _wiki_tokenize(s: str) -> set[str]:
+    return {t.lower() for t in _HANGUL_RE.findall(s or "")}
+
+
+@app.get("/wiki/search", response_model=WikiSearchResponse)
+def wiki_search(q: str, top_k: int = 5, types: str = "topic,entity"):
+    """wiki 파일 title + body 에 대한 키워드 검색. emergence loop 의 web 호출 전 조회용.
+
+    score = title_overlap*2 + body_overlap (정규화). types 는 콤마 구분 (topic,entity,source).
+    """
+    if not q or not q.strip():
+        return WikiSearchResponse(query=q, count=0, items=[])
+    allowed = {t.strip() for t in types.split(",") if t.strip()}
+    q_toks = _wiki_tokenize(q)
+    if not q_toks:
+        return WikiSearchResponse(query=q, count=0, items=[])
+    entries = _wiki_index_build()
+    scored: list[tuple[float, dict]] = []
+    for e in entries:
+        if e["type"] not in allowed:
+            continue
+        t_toks = _wiki_tokenize(e["title"])
+        b_toks = _wiki_tokenize(e["body"][:800])
+        t_over = len(q_toks & t_toks) / max(len(q_toks), 1)
+        b_over = len(q_toks & b_toks) / max(len(q_toks), 1)
+        score = t_over * 2.0 + b_over
+        if score <= 0:
+            continue
+        scored.append((score, e))
+    scored.sort(key=lambda x: -x[0])
+    items = [
+        WikiSearchHit(
+            path=e["path"],
+            title=e["title"],
+            type=e["type"],
+            score=round(min(s / 3.0, 1.0), 4),
+            excerpt=(e["body"][:500] or "").strip(),
+        )
+        for s, e in scored[: max(1, min(top_k, 20))]
+    ]
+    return WikiSearchResponse(query=q, count=len(items), items=items)
+
+
 @app.post("/wiki/inbox/write", response_model=WikiInboxWriteResponse)
 def wiki_inbox_write(req: WikiInboxWriteRequest):
     """인간(또는 Claude Code) 이 wiki 에 입력하는 유일한 경로. `_inbox/` 에만

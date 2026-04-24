@@ -298,6 +298,30 @@ class GClient:
             params["project_id"] = project_id
         return self.http.get("/communities", params=params).raise_for_status().json()
 
+    def wiki_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        types: str = "topic,entity",
+        timeout: float = 5.0,
+    ) -> list[dict]:
+        """Sprint C #C1 — emergence loop 우선조회용 wiki 파일 키워드 검색.
+
+        반환: `[{path, title, type, score, excerpt}]`. 실패 시 빈 list.
+        """
+        try:
+            r = self.http.get(
+                "/wiki/search",
+                params={"q": query, "top_k": top_k, "types": types},
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("items", []) if isinstance(data, dict) else []
+        except Exception:
+            return []
+
 
 def from_env() -> GClient:
     """환경변수 `GSTAR_SERVER_URL` 또는 ctx 활성 `gstar.server_url` 기반 생성.

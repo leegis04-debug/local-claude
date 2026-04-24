@@ -451,6 +451,14 @@ def _run_emergence_loop(
     # GP_EMERGENCE_CACHE_FIRST=on 으로 override 가능 (이미 축적된 주제 재실행 시).
     force_web_default = os.environ.get("GP_EMERGENCE_CACHE_FIRST", "off").lower() not in {"on", "1", "true"}
 
+    # Sprint C #C1 — wiki-first 조회. web 호출 전 wiki topic/entity 인덱스에서
+    # 충분한 synthesis 내용을 발견하면 해당 질문은 web skip. wiki 는 이미
+    # louvain community 단위로 compound 된 상위 지식이라 raw facts 보다 풍부.
+    use_wiki_first = os.environ.get("GP_EMERGENCE_WIKI_FIRST", "on").lower() in {"on", "1", "true"}
+    wiki_top_k = int(os.environ.get("GP_EMERGENCE_WIKI_TOP_K", "3") or "3")
+    wiki_min_score = float(os.environ.get("GP_EMERGENCE_WIKI_MIN_SCORE", "0.15") or "0.15")
+    wiki_min_excerpt = int(os.environ.get("GP_EMERGENCE_WIKI_MIN_EXCERPT", "300") or "300")
+
     for it in range(1, max_iter + 1):
         questions = _emerged_questions(goal, sel.final_facts, max_q=n_questions)
         if not questions:
@@ -460,7 +468,46 @@ def _run_emergence_loop(
 
         total_ingested = 0
         total_web_hits = 0
+        total_wiki_hits = 0
+        wiki_skipped_web = 0
         for q in questions:
+            # wiki-first: 질문이 이미 wiki topic/entity 에 synthesis 돼있는지 조회.
+            wiki_covered = False
+            if use_wiki_first:
+                try:
+                    w_items = gclient.wiki_search(q, top_k=wiki_top_k)
+                except Exception as exc:
+                    rep.warnings.append(
+                        f"[emergence] wiki_search 실패 '{q[:40]}': {type(exc).__name__}: {exc}"
+                    )
+                    w_items = []
+                strong = [
+                    w for w in w_items
+                    if (w.get("score") or 0) >= wiki_min_score
+                    and len(w.get("excerpt") or "") >= wiki_min_excerpt
+                ]
+                if strong:
+                    total_wiki_hits += len(strong)
+                    wiki_covered = True
+                    # wiki 내용을 sel.final_facts 에 주입 (origin="wiki") — 다음
+                    # selector 재호출 전 즉시 Projector 가 활용할 수 있도록.
+                    for w in strong:
+                        sel.final_facts.append({
+                            "node_id": f"wiki:{w.get('path')}",
+                            "text": f"[wiki/{w.get('type')}] {w.get('title','')}\n{w.get('excerpt','')}",
+                            "score": float(w.get("score") or 0.5),
+                            "origin": f"wiki:{w.get('type')}",
+                            "namespace": "wiki",
+                        })
+                    wiki_skipped_web += 1
+                    rep.warnings.append(
+                        f"[emergence] iter {it} wiki-hit '{q[:40]}' "
+                        f"→ {len(strong)}건 주입, web skip"
+                    )
+
+            if wiki_covered:
+                continue
+
             try:
                 res = asyncio.run(
                     cache_first_web_search(q, top_k=web_top_k, force_web=force_web_default)
@@ -471,7 +518,9 @@ def _run_emergence_loop(
                 rep.warnings.append(f"[emergence] web_search 실패 '{q[:40]}': {type(exc).__name__}: {exc}")
 
         rep.warnings.append(
-            f"[emergence] iter {it} 웹 hits={total_web_hits} · G 축적={total_ingested}"
+            f"[emergence] iter {it} wiki_hits={total_wiki_hits} "
+            f"(web_skipped={wiki_skipped_web}/{len(questions)}) · "
+            f"웹 hits={total_web_hits} · G 축적={total_ingested}"
         )
 
         new_sel = run_selector(goal, gclient=gclient, **em_skwargs)
