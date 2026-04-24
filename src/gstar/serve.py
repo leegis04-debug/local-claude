@@ -772,6 +772,8 @@ class WikiEmitResponse(BaseModel):
     entities: int
     topics: int
     sources: int
+    citations: int = 0
+    digests: int = 0
     index_written: bool
     git_pushed: bool
     errors: list[str]
@@ -791,6 +793,8 @@ def _run_wiki_emit(out_dir: str | None) -> WikiEmitResponse:
         entities=r.entities,
         topics=r.topics,
         sources=r.sources,
+        citations=r.citations,
+        digests=r.digests,
         index_written=r.index_written,
         git_pushed=r.git_pushed,
         errors=r.errors,

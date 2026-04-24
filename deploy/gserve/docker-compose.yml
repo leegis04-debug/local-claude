@@ -34,6 +34,13 @@ services:
       GATEWAY_URL: ${GATEWAY_URL:-http://100.79.251.53:8000}
       ASST_TOKEN: ${ASST_TOKEN:-}
       GP_MIRROR_QDRANT: ${GP_MIRROR_QDRANT:-off}
+      # 2026-04-24 v2 — digest/refiner 가 4090 llama.cpp Qwen 14B 호출하기 위한 env.
+      # skill Step 0 와 동일 규약. override 없으면 기본 4090 :8081 llama.cpp 사용.
+      GP_OLLAMA_HOST: ${GP_OLLAMA_HOST:-http://100.105.221.243:8081}
+      GP_LLM_API: ${GP_LLM_API:-openai}
+      PROJECTOR_MODEL: ${PROJECTOR_MODEL:-qwen2.5-14b}
+      GP_SELECTOR_HOST: ${GP_SELECTOR_HOST:-http://100.105.221.243:8082}
+      GP_SELECTOR_API: ${GP_SELECTOR_API:-openai}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9999/health"]
       interval: 30s
