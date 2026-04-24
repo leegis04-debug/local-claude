@@ -33,7 +33,7 @@ def _theme_labels_single(
     """단일 호출 — facts 리스트 하나를 Gemma 에게 테마 분류 요청. 내부용."""
     if len(facts) < 4:
         return []
-    from gstar.projection.selector_loop import selector_host
+    from gstar.projection.selector_loop import selector_host, selector_api
     from gstar.selector.gemma_client import OllamaChatClient
     client = OllamaChatClient(
         host=selector_host(),
@@ -41,6 +41,7 @@ def _theme_labels_single(
         timeout_s=60.0,
         num_predict=300,
         temperature=0.3,
+        api_schema=selector_api(),
     )
     facts_block = "\n".join(
         f"[{i}] {(f.get('text') or '')[:180]}" for i, f in enumerate(facts)
@@ -278,7 +279,7 @@ def _emerged_questions(goal: str, facts: list[dict], max_q: int = 3) -> list[str
     """
     if not facts:
         return []
-    from gstar.projection.selector_loop import selector_host
+    from gstar.projection.selector_loop import selector_host, selector_api
     from gstar.selector.gemma_client import OllamaChatClient
     client = OllamaChatClient(
         host=selector_host(),
@@ -286,6 +287,7 @@ def _emerged_questions(goal: str, facts: list[dict], max_q: int = 3) -> list[str
         timeout_s=60.0,
         num_predict=400,
         temperature=0.5,
+        api_schema=selector_api(),
     )
     facts_block = "\n".join(
         f"- {(f.get('text') or '')[:180]}" for i, f in enumerate(facts[:20])

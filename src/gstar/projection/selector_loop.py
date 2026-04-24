@@ -22,11 +22,30 @@ from gstar.selector.gemma_client import OllamaChatClient, parse_yesno
 
 
 def selector_host() -> str:
-    """Selector 전용 Ollama 호스트. env `SELECTOR_OLLAMA_HOST` → OLLAMA_HOST → localhost."""
-    return os.environ.get(
-        "SELECTOR_OLLAMA_HOST",
-        os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+    """Selector 전용 호스트. 우선순위 (2026-04-24 통합):
+
+    1. `GP_SELECTOR_HOST` — gemma_client.py 규약. skill Step 0 가 설정.
+    2. `SELECTOR_OLLAMA_HOST` — legacy 호환.
+    3. `OLLAMA_HOST` — 전역 기본.
+    4. `http://localhost:11434` — 최종 fallback (맥북 로컬 Ollama).
+
+    이전에는 `GP_SELECTOR_HOST` 를 무시하고 바로 `localhost` 로 fallback 해
+    4090 :8082 대신 맥북 Ollama 로 가서 42분 hang 하던 사고 발생.
+    """
+    return (
+        os.environ.get("GP_SELECTOR_HOST")
+        or os.environ.get("SELECTOR_OLLAMA_HOST")
+        or os.environ.get("OLLAMA_HOST")
+        or "http://localhost:11434"
     )
+
+
+def selector_api() -> str:
+    """Selector OllamaChatClient.api_schema. `GP_SELECTOR_API` 가 우선, 없으면
+    `GP_LLM_API` 전역 설정을 따름. `openai` 면 llama.cpp /v1/chat/completions
+    경로, 그 외는 `ollama` (/api/chat)."""
+    v = (os.environ.get("GP_SELECTOR_API") or os.environ.get("GP_LLM_API") or "ollama").lower()
+    return "openai" if v in {"openai", "llamacpp", "llama.cpp", "v1"} else "ollama"
 
 
 _SYSTEM = (
@@ -144,6 +163,7 @@ def run_selector(
         timeout_s=30.0,
         num_predict=16,
         temperature=0.1,
+        api_schema=selector_api(),
     )
 
     # Phase G7 — 유사 goal 의 과거 절차 retrieval. 시스템 프롬프트 힌트로 주입.
