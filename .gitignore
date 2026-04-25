@@ -7,6 +7,12 @@ venv/
 dist/
 build/
 
+# 민감 정보
+.env
+*.env
+*.key
+*.pem
+
 # 런타임 산출물 — 테스트 시 repo 내에도 생길 수 있음
 state.json
 state.json.tmp
@@ -20,5 +26,5 @@ state.json.corrupt
 05-risk-check/
 06-experiment-plan/
 07-proposal/
-08-final-doc/
+09-bridge/
 09-lab-note/

@@ -267,6 +267,8 @@ def reconcile_canonical_node_ids(store: DuckStore) -> dict:
         c.execute("BEGIN TRANSACTION")
         try:
             c.execute("DROP TABLE IF EXISTS entity_canonical_new")
+            # community_id 는 v4 마이그레이션으로 추가된 nullable 컬럼.
+            # 누락 시 reconcile 가 데이터를 wipe 하므로 명시적으로 보존.
             c.execute("""
                 CREATE TABLE entity_canonical_new AS
                 SELECT
@@ -290,7 +292,8 @@ def reconcile_canonical_node_ids(store: DuckStore) -> dict:
                            WHERE n.kind = 'entity' AND n.text = ea.alias_surface
                            LIMIT 1)
                     ) AS node_id,
-                    ec.created_at
+                    ec.created_at,
+                    ec.community_id
                 FROM entity_canonical ec
             """)
             new_total = c.execute(
@@ -313,6 +316,10 @@ def reconcile_canonical_node_ids(store: DuckStore) -> dict:
             )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ent_node ON entity_canonical(node_id)"
+            )
+            # community_id 인덱스도 v4 와 동일하게 재생성 (Louvain 조회 가속).
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ent_community ON entity_canonical(community_id)"
             )
             c.execute("COMMIT")
         except Exception:

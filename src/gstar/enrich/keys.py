@@ -1,19 +1,20 @@
-"""Enrich API 키 로더 — ~/.gstar/keys.env 에서 자동 로드.
+"""Enrich API 키 로더 — ~/.config/search/.env 에서 자동 로드.
 
 보안:
-- 키는 ~/.gstar/keys.env (퍼미션 0600) 에 저장
+- 키는 ~/.config/search/.env (퍼미션 0600) 에 저장
 - git ignore 됨 (gstar-data 는 .gitignore 에 이미 반영됨)
 - env 에 이미 있으면 파일값 무시 (shell export 우선)
 - 파일 없거나 해당 키 없으면 silent skip
+- ~/.gstar/keys.env 는 위 경로의 심볼릭 링크 (하위 호환)
 
 사용자 작업:
-    mkdir -p ~/.gstar
-    cat > ~/.gstar/keys.env <<EOF
+    mkdir -p ~/.config/search
+    cat > ~/.config/search/.env <<EOF
     TAVILY_API_KEY=tvly-...
     EXA_API_KEY=...
     BRAVE_API_KEY=BSA...
     EOF
-    chmod 600 ~/.gstar/keys.env
+    chmod 600 ~/.config/search/.env
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ def keys_file_path() -> Path:
     p = os.environ.get("GP_KEYS_FILE")
     if p:
         return Path(p)
+    canonical = Path.home() / ".config" / "search" / ".env"
+    if canonical.exists():
+        return canonical
+    # 하위 호환: 심볼릭 링크 또는 구버전 경로
     return Path.home() / ".gstar" / "keys.env"
 
 
@@ -84,13 +89,13 @@ def active_keys_masked() -> dict[str, str]:
 
 def ensure_template() -> Path:
     """키 파일이 없으면 템플릿 생성 (실제 값 없음, 사용자가 채워야 함)."""
-    path = keys_file_path()
+    path = Path.home() / ".config" / "search" / ".env"
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     template = (
         "# Enrich API keys — 각 값을 = 뒤에 채우시오. 모두 선택 사항.\n"
-        "# 이 파일은 ~/.gstar/keys.env 로 저장되며 0600 권한 필수.\n"
+        "# 이 파일은 ~/.config/search/.env 로 저장되며 0600 권한 필수.\n"
         "# 진짜 무료 (카드 불필요):\n"
         "TAVILY_API_KEY=\n"
         "EXA_API_KEY=\n"

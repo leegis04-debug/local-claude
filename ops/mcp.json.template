@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "jw-validator": {
+      "url": "http://100.79.251.53:8766/mcp",
+      "headers": {}
+    },
+    "doc-thinking": {
+      "url": "http://100.79.251.53:8765/mcp",
+      "headers": {}
+    }
+  }
+}

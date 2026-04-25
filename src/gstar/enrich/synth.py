@@ -1,9 +1,15 @@
-"""Web 검색 결과 → Fact 추출 (Ollama).
+"""Web 검색 결과 → Fact 추출.
 
 프롬프트 원칙:
 - 기존 under-connected 노드 (target_node_text) 와 관계 있는 문장만 추출
 - 구체 수치·고유명사·사실 중심
 - 서술형 1-3 문장 (fact node 의 text)
+
+env:
+- `ENRICH_OLLAMA_HOST` 또는 직접 인자 → 엔드포인트 host
+- `ENRICH_OLLAMA_MODEL` 또는 직접 인자 → 모델 이름
+- `ENRICH_LLM_API` (`ollama`|`openai`) 또는 `GP_LLM_API` 계승 → schema 선택
+  `openai` 면 `/v1/chat/completions` (vllm-mlx, llama.cpp, OpenAI-compat).
 """
 
 from __future__ import annotations
@@ -11,6 +17,11 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Any
+
+
+def _enrich_api_schema() -> str:
+    v = (os.environ.get("ENRICH_LLM_API") or os.environ.get("GP_LLM_API", "ollama")).lower()
+    return "openai" if v in {"openai", "llamacpp", "llama.cpp", "v1"} else "ollama"
 
 
 async def synthesize_from_result(
@@ -38,24 +49,48 @@ async def synthesize_from_result(
         f"요약 (1-2 문장, 타겟과 관련된 사실만):"
     )
 
+    api_schema = _enrich_api_schema()
+    use_openai = api_schema == "openai"
+
     try:
         import httpx
 
-        body = {
-            "model": model,
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            "options": {"num_predict": 256, "temperature": 0.2},
-        }
+        if use_openai:
+            body = {
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+            url = f"{host}/v1/chat/completions"
+        else:
+            body = {
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                "options": {"num_predict": 256, "temperature": 0.2},
+            }
+            url = f"{host}/api/chat"
+
         async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(f"{host}/api/chat", json=body)
+            r = await client.post(url, json=body)
             if r.status_code != 200:
                 return _fallback_extract(content, target_node_text)
             data = r.json()
-            msg = data.get("message", {}).get("content", "").strip()
+            if use_openai:
+                try:
+                    msg = (data["choices"][0]["message"]["content"] or "").strip()
+                except Exception:
+                    msg = ""
+            else:
+                msg = data.get("message", {}).get("content", "").strip()
             if msg:
                 return msg
             return _fallback_extract(content, target_node_text)

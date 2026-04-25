@@ -1,0 +1,42 @@
+{
+  "model": "anthropic/claude-opus-4-6",
+  "small_model": "anthropic/claude-haiku-4-5",
+  "agent": {
+    "jw-analyst": {
+      "description": "문제 분석 — 존재·규모·원인 분석",
+      "mode": "subagent",
+      "temperature": 0.3,
+      "permission": {"edit": "allow", "bash": "deny"}
+    },
+    "jw-strategist": {
+      "description": "시장 전략 — 수요·경쟁·타이밍 분석",
+      "mode": "subagent",
+      "temperature": 0.4,
+      "permission": {"edit": "allow", "bash": "deny"}
+    },
+    "jw-architect": {
+      "description": "기술 설계 — 아키텍처·가능성·난이도",
+      "mode": "subagent",
+      "temperature": 0.3,
+      "permission": {"edit": "allow", "bash": "deny"}
+    },
+    "jw-critic": {
+      "description": "비판 전문가 — 허점·과장·모호성 공격",
+      "mode": "subagent",
+      "temperature": 0.5,
+      "permission": {"edit": "deny", "bash": "deny"}
+    },
+    "jw-writer": {
+      "description": "사업계획서 작성 — 수주형 논리 구조",
+      "mode": "subagent",
+      "temperature": 0.4,
+      "permission": {"edit": "allow", "bash": "deny"}
+    },
+    "jw-integrator": {
+      "description": "통합 편집 — 병렬 결과를 하나의 문서로",
+      "mode": "subagent",
+      "temperature": 0.2,
+      "permission": {"edit": "allow", "bash": "deny"}
+    }
+  }
+}

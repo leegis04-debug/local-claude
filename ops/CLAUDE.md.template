@@ -1,0 +1,67 @@
+# {프로젝트명} — 다겸 업무 운영 규칙
+
+## 프로젝트 정보
+- 프로젝트명: {프로젝트명}
+- 사업 유형: {정부사업 유형}
+- 수요기업: {수요기업명}
+- 트랙: {jw|re} (jw=수주문서, re=연구개발)
+- 현재 단계: status.md 참조
+
+## 워크플로우
+### A/B. 문서 트랙 8단계
+사전자료(00) → 아이디어(01) → 토론(02) → 구조화(03) → 기술명세(04) → 리스크점검(05) → 실험설계(06) → 사업계획서(07) → 최종문서(08)
+
+### C. 공통 브리지
+최종문서(08) → /jw:award-to-dev → 브리지(09) = Epic/Milestone/Task/Sub-task 변환
+
+### D. 공통 개발 실행
+브리지(09) → /gsd-new-project → [discuss→plan→execute→verify→tests→secure] 반복 → /gsd-ship
+
+## 디렉토리 구조
+```
+00-input/          사전자료 (공고문, 양식, 참고자료)
+01-idea/           아이디어 정제
+02-debate/         다면 토론
+03-structure/      양식 블록 프레임
+04-spec/           기술명세서
+05-risk-check/     리스크 점검
+06-experiment-plan/ 실험 프로토콜
+07-proposal/       사업계획서
+09-bridge/         Jira 계획·CSV·RI (award-to-dev 산출물)
+dev/               GSD 개발 workspace
+```
+
+## 사전 자료 (00-input/)
+공고문, 양식, 참고자료를 `00-input/`에 넣으면 모든 문서 트랙 명령이 자동 참조한다.
+- 공고문/공모안내서 → 평가 기준, 지원 자격, 사업 규모 반영
+- 사업계획서 양식 → 필수 항목, 분량 제한, 구성 순서 반영
+- 참고자료 (기업소개서, IR 등) → 수요기업 현황, 도입 배경 반영
+- 핵심 정보는 `00-input/input-summary.md`에 자동 정리됨
+
+## 핵심 원칙
+1. 모든 작업은 반드시 해당 단계의 명령으로 시작한다 (jw 트랙: /jw:*, re 트랙: /re:*)
+2. 이전 단계의 통합 산출물(★ 표시 파일)을 반드시 읽은 후 다음 단계를 시작한다
+3. 사업계획서 관련 수치는 반드시 출처를 표기한다
+4. 기술명세의 "구현 난이도"는 다겸 팀 역량 기준으로 판단한다
+5. 최종 산출물은 항상 하나의 통합 문서로 정리한다
+6. 브리지(09) 이후 개발은 반드시 dev/ 디렉토리에서 GSD로 실행한다
+
+## 에이전트 컨벤션
+- jw 트랙: jw-* 접두사 (.claude/agents/에 심링크)
+  - jw-analyst, jw-strategist, jw-architect, jw-critic, jw-writer, jw-integrator
+- re 트랙: re-* 접두사
+  - re-researcher, re-senior, re-principal, re-methodologist, re-analyst, re-architect, re-critic, re-writer, re-integrator
+
+## 단계별 도구
+- 문서 트랙 (01~08): SuperClaude 명령 + Claude Squad 병렬
+- 브리지 (09): /jw:award-to-dev
+- 개발 실행 (dev/): Claude Code + GSD
+- 운영/관제: OpenCode
+
+## Claude Squad 사용 시 주의
+- 이 디렉토리는 git repo (Squad worktree 지원)
+- 각 에이전트는 별도 파일에 쓰도록 지시 (merge 충돌 방지)
+- 병렬 완료 후 반드시 jw-integrator로 통합 문서 생성
+
+## 기존 문서 참조
+- 관련 기존 자료: ../../doc/사업/2026년/{관련 경로}

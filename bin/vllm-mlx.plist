@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd agent — 맥북 vllm-mlx (MLX 백엔드) 상시 기동.
+     기본: Qwen 2.5 3B Instruct 4-bit + bge-m3 fp16 임베딩, 포트 11434.
+     (selector 비중 70-95% 라 작은 모델 분리. Gemma 3·4 모두 multimodal(VLM)
+      로 인식되어 vllm-mlx 0.2.9 mlx_vlm async 버그 #380 발생. 검증된 text-only
+      모델 = Qwen 2.5 3B 4-bit. selector latency 0.5s/call 미만 기대.)
+
+     설치:
+       cp bin/vllm-mlx.plist ~/Library/LaunchAgents/com.local-claude.vllm-mlx.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.local-claude.vllm-mlx.plist
+
+     재기동:
+       launchctl kickstart -k gui/$(id -u)/com.local-claude.vllm-mlx
+
+     정지:
+       launchctl bootout gui/$(id -u)/com.local-claude.vllm-mlx
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local-claude.vllm-mlx</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>exec "$HOME/workspace/local-claude/bin/vllm-mlx-serve.sh"</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>VLLM_MLX_PORT</key>
+    <string>11434</string>
+    <key>VLLM_MLX_HOST</key>
+    <string>127.0.0.1</string>
+    <key>VLLM_MLX_MODEL</key>
+    <string>mlx-community/Qwen2.5-3B-Instruct-4bit</string>
+    <key>VLLM_MLX_MODEL_NAME</key>
+    <string>qwen-2.5-3b</string>
+    <key>VLLM_MLX_EMBEDDING</key>
+    <string>mlx-community/bge-m3-mlx-fp16</string>
+    <key>VLLM_MLX_KV_QUANT</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>/Users/ljw0904/Library/Logs/vllm-mlx.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ljw0904/Library/Logs/vllm-mlx.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/ljw0904/workspace/local-claude</string>
+</dict>
+</plist>

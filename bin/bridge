@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bridge — 09-bridge (award-to-dev) 공용 도구 래퍼.
+# subcommands: init | env-example | check-jira | csv | refresh-subtasks | ri-init | ri-rename
+set -eu
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_root="$(cd "$_dir/.." && pwd)"
+# shellcheck source=./_lc_common.sh
+. "$_dir/_lc_common.sh"
+export PYTHONPATH="$_root/src${PYTHONPATH:+:$PYTHONPATH}"
+PY="$(_lc_pick_python "$_root")"
+exec "$PY" -m gstar.bridge.cli "$@"
