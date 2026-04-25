@@ -341,7 +341,9 @@ def _extract_hwp(path: Path) -> str:
     with open(path, "rb") as f:
         magic = f.read(8)
     if not magic.startswith(_OLE2_MAGIC):
-        raise ValueError("not OLE2 compound binary (likely HWPML XML or unsupported variant)")
+        # `.hwp` 확장자라도 정부 법제처 시스템 등은 HWPML XML 로 자동 생성한다.
+        # XML 이면 그쪽 파서로 fallback, 아니면 unsupported.
+        return _extract_hwpml_xml(path)
 
     hwp5html = shutil.which("hwp5html")
     if not hwp5html:
@@ -445,6 +447,110 @@ def _pptx_table_to_markdown(table) -> str:
         n_cols = max(len(rows[0].split("|")) - 2, 1)
         rows.insert(1, "| " + " | ".join(["---"] * n_cols) + " |")
     return "\n".join(rows)
+
+
+# HWPML XML 변종 처리 — `.hwp` 확장자로 위장한 한컴 XML 직렬화 포맷.
+# 정부 법제처(국가법령정보센터)가 훈령·고시·지침 등을 자동 export 할 때 사용.
+# root: <HWPML Version="2.x">, 본문은 BODY > SECTION > P > TEXT > CHAR(.text),
+# 표는 TABLE > ROW > CELL > P > ... 구조.
+_HWPML_SKIP_TAGS = frozenset({
+    "SHAPEOBJECT", "PICTURE", "BINITEM", "BINDATALIST",
+    "DOCSUMMARY", "DOCSETTING", "MAPPINGTABLE",
+})
+
+
+def _extract_hwpml_xml(path: Path) -> str:
+    """`.hwp` 확장자에 실제는 HWPML XML 인 파일.
+
+    정상 형식이 아니면 ValueError 를 raise — 호출자가 meta.error 에 사유 기록.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        tree = ET.parse(path)
+    except ET.ParseError as e:
+        raise ValueError(f"file is neither OLE2 HWP nor valid XML ({e})")
+    root = tree.getroot()
+    if _local_name(root.tag).upper() != "HWPML":
+        raise ValueError(f"unknown XML root <{root.tag}> (expected HWPML)")
+
+    body = None
+    for child in root:
+        if _local_name(child.tag).upper() == "BODY":
+            body = child
+            break
+    if body is None:
+        return ""
+
+    text = _hwpml_walk(body)
+    # 다중 빈 줄 정리
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text.strip()
+
+
+def _hwpml_walk(elem) -> str:
+    """HWPML element → 텍스트. 단락 P 는 줄바꿈, TABLE 은 마크다운 표."""
+    tag = _local_name(elem.tag).upper()
+
+    if tag in _HWPML_SKIP_TAGS:
+        return ""
+
+    if tag == "TABLE":
+        md = _hwpml_table_to_markdown(elem)
+        out = ["\n", md, "\n"]
+        if elem.tail:
+            out.append(elem.tail)
+        return "".join(out)
+
+    out: list[str] = []
+    if tag == "CHAR" and elem.text:
+        out.append(elem.text)
+
+    for child in elem:
+        out.append(_hwpml_walk(child))
+
+    if tag == "P":
+        out.append("\n")
+    if elem.tail:
+        out.append(elem.tail)
+    return "".join(out)
+
+
+def _hwpml_table_to_markdown(tbl) -> str:
+    rows: list[str] = []
+    for row in tbl:
+        if _local_name(row.tag).upper() != "ROW":
+            continue
+        cells: list[str] = []
+        for cell in row:
+            if _local_name(cell.tag).upper() != "CELL":
+                continue
+            txt = _hwpml_text_only(cell).strip().replace("|", "\\|")
+            cells.append(txt)
+        if cells:
+            rows.append("| " + " | ".join(cells) + " |")
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        n_cols = max(len(rows[0].split("|")) - 2, 1)
+        rows.insert(1, "| " + " | ".join(["---"] * n_cols) + " |")
+    return "\n".join(rows)
+
+
+def _hwpml_text_only(elem) -> str:
+    """elem 내부의 모든 CHAR 텍스트를 공백으로 이어붙임 (셀 추출용)."""
+    parts: list[str] = []
+    tag = _local_name(elem.tag).upper()
+    if tag in _HWPML_SKIP_TAGS:
+        return ""
+    if tag == "CHAR" and elem.text:
+        parts.append(elem.text)
+    for child in elem:
+        sub = _hwpml_text_only(child)
+        if sub:
+            parts.append(sub)
+    return " ".join(p.strip() for p in parts if p and p.strip())
 
 
 def extract_directory(

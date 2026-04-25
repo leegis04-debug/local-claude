@@ -202,6 +202,53 @@ def test_extract_hwp_no_tooling_returns_empty(tmp_path: Path, monkeypatch):
     assert r.text == ""
 
 
+def test_extract_hwpml_xml(tmp_path: Path):
+    """`.hwp` 확장자에 HWPML XML 내용 — 정부 법제처가 export 하는 변종."""
+    hwpml = tmp_path / "rule.hwp"
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+<HWPML Version="2.1">
+  <HEAD><DOCSUMMARY><TITLE>샘플 훈령</TITLE></DOCSUMMARY></HEAD>
+  <BODY>
+    <SECTION Id="0">
+      <P><TEXT><CHAR>제1조(목적) 본 지침은 시범 목적이다.</CHAR></TEXT></P>
+      <P><TEXT><CHAR>제2조(정의) 용어는 다음과 같다.</CHAR></TEXT></P>
+      <TABLE>
+        <ROW>
+          <CELL><P><TEXT><CHAR>구분</CHAR></TEXT></P></CELL>
+          <CELL><P><TEXT><CHAR>금액</CHAR></TEXT></P></CELL>
+        </ROW>
+        <ROW>
+          <CELL><P><TEXT><CHAR>인건비</CHAR></TEXT></P></CELL>
+          <CELL><P><TEXT><CHAR>1억원</CHAR></TEXT></P></CELL>
+        </ROW>
+      </TABLE>
+    </SECTION>
+  </BODY>
+</HWPML>
+"""
+    hwpml.write_text(xml, encoding="utf-8")
+    r = extract_file(hwpml)
+    assert r.ok, r.meta
+    assert "제1조(목적) 본 지침은 시범 목적이다." in r.text
+    assert "제2조(정의)" in r.text
+    assert "| 구분 | 금액 |" in r.text
+    assert "| 인건비 | 1억원 |" in r.text
+    assert "| --- | --- |" in r.text
+
+
+def test_extract_hwp_unsupported_xml_root_errors(tmp_path: Path):
+    """HWPML 도 OLE2 도 아닌 일반 XML → ValueError 가 meta.error 로 기록."""
+    bad = tmp_path / "weird.hwp"
+    bad.write_text(
+        '<?xml version="1.0"?><lawml><para>not hwpml</para></lawml>',
+        encoding="utf-8",
+    )
+    r = extract_file(bad)
+    assert r.ext == ".hwp"
+    assert not r.ok
+    assert "expected HWPML" in (r.meta.get("error") or "")
+
+
 def test_extract_pdf_fake(tmp_path: Path):
     """pypdf 는 빈 PDF 에도 오류 없이 빈 텍스트 반환."""
     pytest.importorskip("pypdf")
