@@ -18,7 +18,13 @@ from gstar.projection.extractors import (
 
 def test_supported_exts_covers_core_formats():
     exts = supported_exts()
-    for e in [".md", ".txt", ".pdf", ".hwpx", ".docx", ".xlsx", ".json"]:
+    for e in [".md", ".txt", ".pdf", ".hwp", ".hwpx", ".docx", ".pptx", ".xlsx", ".json"]:
+        assert e in exts, f"missing {e}"
+
+
+def test_supported_exts_includes_code():
+    exts = supported_exts()
+    for e in [".py", ".ts", ".tsx", ".js", ".go", ".rs", ".sh"]:
         assert e in exts, f"missing {e}"
 
 
@@ -101,6 +107,99 @@ def test_extract_hwpx_namespace_agnostic(tmp_path: Path):
         zf.writestr("Contents/section0.xml", xml_content)
     r = extract_file(hwpx)
     assert "no ns" in r.text
+
+
+def test_extract_hwpx_table_to_markdown(tmp_path: Path):
+    """hp:tbl 이 마크다운 표로 변환되어 라벨-값 구조가 살아있어야 한다."""
+    hwpx = tmp_path / "tbl.hwpx"
+    xml = (
+        """<?xml version="1.0" encoding="UTF-8"?>
+<hp:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>본문 단락</hp:t></hp:run></hp:p>
+  <hp:tbl>
+    <hp:tr>
+      <hp:tc><hp:p><hp:run><hp:t>과제명</hp:t></hp:run></hp:p></hp:tc>
+      <hp:tc><hp:p><hp:run><hp:t>AI 반도체</hp:t></hp:run></hp:p></hp:tc>
+    </hp:tr>
+    <hp:tr>
+      <hp:tc><hp:p><hp:run><hp:t>주관기관</hp:t></hp:run></hp:p></hp:tc>
+      <hp:tc><hp:p><hp:run><hp:t>다겸</hp:t></hp:run></hp:p></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+</hp:sec>
+"""
+    ).encode("utf-8")
+    with zipfile.ZipFile(hwpx, "w") as zf:
+        zf.writestr("Contents/section0.xml", xml)
+    r = extract_file(hwpx)
+    assert r.ok, r.meta
+    assert "본문 단락" in r.text
+    assert "| 과제명 | AI 반도체 |" in r.text
+    assert "| 주관기관 | 다겸 |" in r.text
+    assert "| --- | --- |" in r.text
+
+
+def test_extract_pptx(tmp_path: Path):
+    pytest.importorskip("pptx")
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    blank = prs.slide_layouts[6]
+    s1 = prs.slides.add_slide(blank)
+    box = s1.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    box.text_frame.text = "프로젝트 개요"
+
+    s2 = prs.slides.add_slide(blank)
+    tbl = s2.shapes.add_table(
+        2, 2, Inches(1), Inches(1), Inches(5), Inches(2)
+    ).table
+    tbl.cell(0, 0).text = "헤더1"
+    tbl.cell(0, 1).text = "헤더2"
+    tbl.cell(1, 0).text = "값1"
+    tbl.cell(1, 1).text = "값2"
+
+    path = tmp_path / "deck.pptx"
+    prs.save(str(path))
+
+    r = extract_file(path)
+    assert r.ok, r.meta
+    assert "Slide 1" in r.text
+    assert "프로젝트 개요" in r.text
+    assert "Slide 2" in r.text
+    assert "| 헤더1 | 헤더2 |" in r.text
+    assert "| 값1 | 값2 |" in r.text
+
+
+def test_extract_code_python(tmp_path: Path):
+    f = tmp_path / "main.py"
+    f.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+    r = extract_file(f)
+    assert r.ok
+    assert r.ext == ".py"
+    assert "hello" in r.text
+
+
+def test_extract_code_typescript(tmp_path: Path):
+    f = tmp_path / "app.ts"
+    f.write_text("export const x: number = 42;\n", encoding="utf-8")
+    r = extract_file(f)
+    assert r.ok
+    assert "x: number" in r.text
+
+
+def test_extract_hwp_no_tooling_returns_empty(tmp_path: Path, monkeypatch):
+    """hwp5html CLI 가 PATH·sys.executable 양쪽에 모두 없으면 빈 결과 반환."""
+    import shutil
+    import sys
+
+    fake = tmp_path / "fake.hwp"
+    fake.write_bytes(b"\xd0\xcf\x11\xe0")
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no_python"))
+    r = extract_file(fake)
+    assert r.ext == ".hwp"
+    assert r.text == ""
 
 
 def test_extract_pdf_fake(tmp_path: Path):

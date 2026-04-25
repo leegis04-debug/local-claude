@@ -19,6 +19,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+bridge = [
+    "pyyaml>=6.0",
+]
 gstar = [
     "duckdb>=1.0",
     "faiss-cpu>=1.8",
@@ -46,6 +49,9 @@ input = [
     "pypdf>=5.0",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    "pyhwp>=0.1b15",
+    "python-pptx>=1.0",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.scripts]

@@ -21,6 +21,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+_CODE_EXTS: frozenset[str] = frozenset({
+    ".py", ".pyi",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".swift",
+    ".c", ".h", ".cpp", ".hpp", ".cc",
+    ".sh", ".bash", ".zsh",
+    ".rb",
+    ".sql",
+})
+
 _SUPPORTED_EXTS: set[str] = {
     ".md",
     ".txt",
@@ -28,11 +38,13 @@ _SUPPORTED_EXTS: set[str] = {
     ".yaml",
     ".yml",
     ".pdf",
+    ".hwp",
     ".hwpx",
     ".docx",
+    ".pptx",
     ".xlsx",
     ".csv",
-}
+} | set(_CODE_EXTS)
 
 _MAX_PDF_PAGES_DEFAULT = 80
 _MAX_CHARS_PER_FILE_DEFAULT = 60_000
@@ -73,12 +85,18 @@ def extract_file(
             text = _extract_csv(path)
         elif ext == ".pdf":
             text = _extract_pdf(path, max_pages=max_pdf_pages)
+        elif ext == ".hwp":
+            text = _extract_hwp(path)
         elif ext == ".hwpx":
             text = _extract_hwpx(path)
         elif ext == ".docx":
             text = _extract_docx(path)
+        elif ext == ".pptx":
+            text = _extract_pptx(path)
         elif ext == ".xlsx":
             text = _extract_xlsx(path)
+        elif ext in _CODE_EXTS:
+            text = _extract_text_plain(path)
         else:
             return ExtractResult(path, ext, "", {"error": f"unsupported ext {ext}"})
     except Exception as e:
@@ -196,10 +214,10 @@ _HWPX_TEXT_TAGS = {"t", "p"}
 
 
 def _extract_hwpx(path: Path) -> str:
-    """HWPX = ZIP + XML. Contents/section*.xml 에서 텍스트 추출.
+    """HWPX = ZIP + XML. Contents/section*.xml 에서 텍스트 + 표 마크다운 추출.
 
-    외부 라이브러리 없이 stdlib 만 사용.
-    `<hp:t>` 또는 `<t>` 태그 내 text 를 이어붙이고, 단락(`<hp:p>`) 경계에서 줄바꿈.
+    `<hp:t>` 텍스트 + `<hp:p>` 단락 경계 + `<hp:tbl>` 표 → 마크다운 표.
+    외부 라이브러리 불필요 (stdlib 만).
     """
     import xml.etree.ElementTree as ET
     import zipfile
@@ -231,14 +249,26 @@ def _extract_hwpx(path: Path) -> str:
     return "\n\n".join(text_parts)
 
 
-def _hwpx_walk(elem) -> str:
-    """재귀 walk. 네임스페이스 관계없이 local tag 이름이 t/p 면 텍스트·단락 경계 처리."""
-    out: list[str] = []
-    tag = elem.tag
+def _local_name(tag: str) -> str:
     if "}" in tag:
-        tag = tag.split("}", 1)[1]
-    is_para = tag.lower() == "p"
-    is_text = tag.lower() == "t"
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def _hwpx_walk(elem) -> str:
+    """재귀 walk. 단락(p)/표(tbl) 경계 처리. 표는 마크다운으로 변환되며 자식 재귀 멈춤."""
+    tag = _local_name(elem.tag).lower()
+
+    if tag == "tbl":
+        md = _hwpx_table_to_markdown(elem)
+        out = ["\n", md, "\n"]
+        if elem.tail:
+            out.append(elem.tail)
+        return "".join(out)
+
+    out: list[str] = []
+    is_para = tag == "p"
+    is_text = tag == "t"
 
     if is_text and elem.text:
         out.append(elem.text)
@@ -248,8 +278,173 @@ def _hwpx_walk(elem) -> str:
         out.append("\n")
     if elem.tail:
         out.append(elem.tail)
-
     return "".join(out)
+
+
+def _hwpx_table_to_markdown(tbl) -> str:
+    """hp:tbl → 마크다운 표. 셀 내부 다중 단락은 공백으로 평탄화."""
+    rows: list[str] = []
+    for tr in tbl:
+        if _local_name(tr.tag).lower() != "tr":
+            continue
+        cells: list[str] = []
+        for tc in tr:
+            if _local_name(tc.tag).lower() != "tc":
+                continue
+            cell_text = _hwpx_text_only(tc).strip().replace("|", "\\|")
+            cells.append(cell_text)
+        if cells:
+            rows.append("| " + " | ".join(cells) + " |")
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        n_cols = max(len(rows[0].split("|")) - 2, 1)
+        rows.insert(1, "| " + " | ".join(["---"] * n_cols) + " |")
+    return "\n".join(rows)
+
+
+def _hwpx_text_only(elem) -> str:
+    """elem 내부 모든 <t> 텍스트만 공백으로 이어붙임 (표 셀 추출용)."""
+    parts: list[str] = []
+    if _local_name(elem.tag).lower() == "t" and elem.text:
+        parts.append(elem.text)
+    for child in elem:
+        sub = _hwpx_text_only(child)
+        if sub:
+            parts.append(sub)
+    return " ".join(p for p in parts if p)
+
+
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _extract_hwp(path: Path) -> str:
+    """HWP 5.x (OLE Compound) → hwp5html(pyhwp) HTML 변환 후 마크다운화.
+
+    표 구조 보존이 핵심 (양식 분석용). hwp5txt 는 표를 `<표>` placeholder 로만
+    내보내므로 사용하지 않는다.
+
+    `.hwp` 확장자라도 실제로는 OLE2 가 아닌 변종 (HWPML XML, 손상 파일 등) 이
+    종종 있다 — 이 경우 raise 해서 호출자(extract_file)가 meta.error 에 사유를
+    기록하도록 한다.
+    """
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return ""
+
+    with open(path, "rb") as f:
+        magic = f.read(8)
+    if not magic.startswith(_OLE2_MAGIC):
+        raise ValueError("not OLE2 compound binary (likely HWPML XML or unsupported variant)")
+
+    hwp5html = shutil.which("hwp5html")
+    if not hwp5html:
+        candidate = Path(sys.executable).parent / "hwp5html"
+        if candidate.exists():
+            hwp5html = str(candidate)
+    if not hwp5html:
+        return ""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(
+                [hwp5html, "--output", tmp, str(path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            return ""
+        index = Path(tmp) / "index.xhtml"
+        if not index.exists():
+            raise ValueError("hwp5html produced no output (file may be encrypted or corrupted)")
+        html = index.read_text(encoding="utf-8", errors="replace")
+
+    soup = BeautifulSoup(html, "html.parser")
+    return _html_body_to_markdown(soup)
+
+
+def _html_body_to_markdown(soup) -> str:
+    """bs4 soup → 단락·표·헤더 마크다운. 표 안 단락은 셀로 흡수."""
+    body = soup.body or soup
+    parts: list[str] = []
+    for elem in body.find_all(["h1", "h2", "h3", "h4", "p", "table"], recursive=True):
+        if elem.find_parent("table"):
+            continue
+        if elem.name == "table":
+            md = _html_table_to_markdown(elem)
+            if md:
+                parts.append(md)
+        elif elem.name in ("h1", "h2", "h3", "h4"):
+            text = elem.get_text(separator=" ", strip=True)
+            if text:
+                parts.append("#" * int(elem.name[1]) + " " + text)
+        else:
+            text = elem.get_text(separator=" ", strip=True)
+            if text:
+                parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _html_table_to_markdown(table) -> str:
+    rows: list[str] = []
+    for tr in table.find_all("tr"):
+        cells: list[str] = []
+        for td in tr.find_all(["td", "th"]):
+            txt = td.get_text(separator=" ", strip=True).replace("|", "\\|")
+            cells.append(txt)
+        if cells:
+            rows.append("| " + " | ".join(cells) + " |")
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        n_cols = max(len(rows[0].split("|")) - 2, 1)
+        rows.insert(1, "| " + " | ".join(["---"] * n_cols) + " |")
+    return "\n".join(rows)
+
+
+def _extract_pptx(path: Path) -> str:
+    """PPTX → 슬라이드별 텍스트 + 표 마크다운."""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return ""
+
+    prs = Presentation(str(path))
+    parts: list[str] = []
+    for i, slide in enumerate(prs.slides, 1):
+        slide_parts: list[str] = [f"## Slide {i}"]
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        slide_parts.append(text)
+            if getattr(shape, "has_table", False) and shape.has_table:
+                slide_parts.append(_pptx_table_to_markdown(shape.table))
+        if len(slide_parts) > 1:
+            parts.append("\n".join(slide_parts))
+    return "\n\n".join(parts)
+
+
+def _pptx_table_to_markdown(table) -> str:
+    rows: list[str] = []
+    for row in table.rows:
+        cells = [(c.text or "").strip().replace("|", "\\|") for c in row.cells]
+        rows.append("| " + " | ".join(cells) + " |")
+    if not rows:
+        return ""
+    if len(rows) > 1:
+        n_cols = max(len(rows[0].split("|")) - 2, 1)
+        rows.insert(1, "| " + " | ".join(["---"] * n_cols) + " |")
+    return "\n".join(rows)
 
 
 def extract_directory(
