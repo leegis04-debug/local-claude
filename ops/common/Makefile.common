@@ -83,6 +83,44 @@ restart:  ## down + up
 	$(MAKE) down
 	$(MAKE) up
 
+# ── 배포 가능 이미지 빌드 (amd64, 코드 포함) ─────────────────
+.PHONY: build-images ship ship-config
+
+build-images:  ## 모든 서비스 이미지 빌드 (amd64, 코드 포함, GPU 서버 호환)
+ifeq ($(HAS_JAVA),yes)
+	docker buildx build --platform linux/amd64 --load \
+	  -t $(PROJECT)-backend:latest spring-backend/
+endif
+ifeq ($(HAS_ML),yes)
+	docker buildx build --platform linux/amd64 --load \
+	  --build-arg BASE_IMAGE=local-claude/ops-ml:latest \
+	  -t $(PROJECT)-ai:latest ai-worker/
+endif
+ifeq ($(HAS_FE),yes)
+	docker buildx build --platform linux/amd64 --load \
+	  -t $(PROJECT)-frontend:latest frontend/
+endif
+	@echo "✓ 이미지 빌드 완료 (amd64, 코드 포함)"
+	@docker images | grep $(PROJECT)
+
+ship-config:  ## prod compose + .env.prod 만 GPU 서버로 전송 (이미지 제외)
+	@[ -f .env.prod ] || (echo "오류: .env.prod 가 없습니다. cp .env.prod.template .env.prod"; exit 1)
+	@[ -f docker-compose.prod.yml ] || (echo "오류: docker-compose.prod.yml 없음"; exit 1)
+	ssh $(REMOTE) 'mkdir -p ~/services/$(PROJECT)'
+	rsync -avz docker-compose.prod.yml .env.prod $(REMOTE):~/services/$(PROJECT)/
+
+ship: build-images ship-config  ## 이미지+compose 전체 배포 (GPU 서버에 즉시 실행)
+	@echo "→ 이미지 전송 중 (docker save | ssh | docker load)..."
+	docker save \
+	  $(if $(HAS_JAVA),$(PROJECT)-backend:latest) \
+	  $(if $(HAS_ML),$(PROJECT)-ai:latest) \
+	  $(if $(HAS_FE),$(PROJECT)-frontend:latest) | \
+	  ssh $(REMOTE) 'docker load'
+	@echo "→ 원격에서 docker compose up..."
+	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
+	  docker compose --env-file .env.prod -f docker-compose.prod.yml up -d'
+	@echo "✓ 배포 완료 — 같은 이미지가 GPU 환경에서 native 실행 중"
+
 # ── ML (Python AI Worker) ───────────────────────────────────
 ifeq ($(HAS_ML),yes)
 .PHONY: train eval experiments sync-nas ai-build ai-logs ai-shell
@@ -109,6 +147,25 @@ ai-logs:  ## AI Worker 로그 (compose)
 
 ai-shell:  ## AI Worker 컨테이너 셸
 	docker compose -f docker-compose.dev.yml exec ai-worker bash
+
+# ── 호스트 직접 실행 (M2 MPS / 로컬 NVIDIA GPU 활용) ────────
+.PHONY: ai-host ai-host-setup up-noai
+
+ai-host-setup:  ## ai-worker 전용 venv 생성 + 의존성 설치 (호스트 GPU 인식)
+	cd $(ML_DIR) && python3 -m venv .venv && \
+	  .venv/bin/pip install --upgrade pip && \
+	  .venv/bin/pip install -r requirements.txt
+	@echo "✓ $(ML_DIR)/.venv 준비됨 — torch가 M2 MPS / NVIDIA CUDA 자동 감지"
+
+ai-host:  ## ai-worker 를 호스트에서 직접 실행 (Docker 우회, GPU 사용)
+	cd $(ML_DIR) && .venv/bin/uvicorn src.main:app \
+	  --host 0.0.0.0 --port 8001 --reload
+
+up-noai:  ## ai-worker 빼고 docker compose 기동 (ai-worker 는 호스트에서 별도 실행)
+	docker compose --env-file .env.dev -f docker-compose.dev.yml up -d \
+	  $$(docker compose -f docker-compose.dev.yml config --services | grep -v '^ai-worker$$')
+	@echo "✓ ai-worker 제외 모든 서비스 기동"
+	@echo "  → 별도 터미널에서: make ai-host  (M2 GPU 활용)"
 endif
 
 # ── Java (Spring Boot + Spring AI) ─────────────────────────

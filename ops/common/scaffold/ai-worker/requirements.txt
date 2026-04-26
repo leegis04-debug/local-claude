@@ -1,6 +1,7 @@
 torch>=2.1
 torchvision>=0.16
-onnxruntime-gpu>=1.17
+# onnxruntime: arm64(맥북)에서는 CPU 빌드, amd64+CUDA(4090) 배포 시 onnxruntime-gpu 추가 설치
+onnxruntime>=1.17
 opencv-python-headless>=4.9
 fastapi>=0.104
 uvicorn>=0.24
@@ -11,4 +12,3 @@ prometheus-client>=0.20
 prometheus-fastapi-instrumentator>=7.0
 mlflow>=2.10
 onnx>=1.15
-onnxruntime>=1.17

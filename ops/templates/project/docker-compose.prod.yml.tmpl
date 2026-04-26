@@ -1,0 +1,82 @@
+# 운영 docker-compose — volume mount 없음, 이미지에 코드 포함된 상태로 실행
+# 맥북에서 빌드한 이미지를 GPU 서버로 옮겨서 그대로 사용 (단일 이미지 = 단일 진실)
+#
+# 배포 흐름:
+#   맥북: make build-images   →  amd64 이미지 빌드 (코드 포함)
+#   맥북: make ship           →  이미지 + .env.prod + 이 compose 를 GPU 서버로 전송
+#   GPU 서버: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#                              (GPU runtime 자동 활성화, 같은 코드 native 실행)
+
+include:
+  # __INCLUDE_PG__   - LOCAL_CLAUDE_PATH/ops/common/compose/postgres-pgvector.yml
+  # __INCLUDE_REDIS__   - LOCAL_CLAUDE_PATH/ops/common/compose/redis.yml
+  # __INCLUDE_OLLAMA__   - LOCAL_CLAUDE_PATH/ops/common/compose/ollama.yml
+  # __INCLUDE_MLFLOW__   - LOCAL_CLAUDE_PATH/ops/common/compose/mlflow.yml
+
+services:
+  # __SERVICE_BACKEND_BEGIN__
+  spring-backend:
+    image: __PROJECT__-backend:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      AI_WORKER_URL: http://ai-worker:8001
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      REDIS_HOST: redis
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+  # __SERVICE_BACKEND_END__
+
+  # __SERVICE_AI_WORKER_BEGIN__
+  ai-worker:
+    image: __PROJECT__-ai:latest
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      ENV: production
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # GPU 자동 감지: nvidia-container-runtime 있으면 GPU 사용, 없으면 CPU 폴백
+    # (compose v3.8+ 의 deploy.resources.reservations.devices 는 미설치 시 silent skip)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  # __SERVICE_AI_WORKER_END__
+
+  # __SERVICE_FRONTEND_BEGIN__
+  frontend:
+    image: __PROJECT__-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+  # __SERVICE_FRONTEND_END__

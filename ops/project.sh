@@ -653,21 +653,29 @@ cmd_init_stack() {
   local LC="$LOCAL_CLAUDE_HOME"
 
   # include 마커 활성화: 줄 전체를 "  - <절대경로>" 로 치환 (YAML 2-space 들여쓰기)
-  has pgvector       && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
-  has redis          && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
-  has mqtt           && sed -i.bak "s|^  # __INCLUDE_MQTT__.*|  - $LC/ops/common/compose/mqtt.yml|" "$COMPOSE"
-  has ollama         && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
-  has frontend       && sed -i.bak "s|^  # __INCLUDE_FE__.*|  - $LC/ops/common/compose/frontend.yml|" "$COMPOSE"
-  has observability  && sed -i.bak "s|^  # __INCLUDE_OBS__.*|  - $LC/ops/common/compose/observability.yml|" "$COMPOSE"
-  has mlflow         && sed -i.bak "s|^  # __INCLUDE_MLFLOW__.*|  - $LC/ops/common/compose/mlflow.yml|" "$COMPOSE"
-  has vault          && sed -i.bak "s|^  # __INCLUDE_VAULT__.*|  - $LC/ops/common/compose/vault.yml|" "$COMPOSE"
+  # include: 는 image-only 인프라만 (postgres/redis/ollama/mlflow/vault)
+  has pgvector  && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
+  has redis     && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
+  has ollama    && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
+  has mlflow    && sed -i.bak "s|^  # __INCLUDE_MLFLOW__.*|  - $LC/ops/common/compose/mlflow.yml|" "$COMPOSE"
+  has vault     && sed -i.bak "s|^  # __INCLUDE_VAULT__.*|  - $LC/ops/common/compose/vault.yml|" "$COMPOSE"
 
-  # 사용 안 하는 서비스 블록 제거 (BEGIN ~ END 마커 사이 통째로)
+  # 서비스 블록 제거 (BEGIN ~ END 마커 사이 통째로)
+  # build·configs 마운트가 있는 서비스는 메인 compose 의 service 블록으로 처리
   if ! has java; then
     sed -i.bak '/# __SERVICE_BACKEND_BEGIN__/,/# __SERVICE_BACKEND_END__/d' "$COMPOSE"
   fi
   if ! has ml; then
     sed -i.bak '/# __SERVICE_AI_WORKER_BEGIN__/,/# __SERVICE_AI_WORKER_END__/d' "$COMPOSE"
+  fi
+  if ! has frontend; then
+    sed -i.bak '/# __SERVICE_FRONTEND_BEGIN__/,/# __SERVICE_FRONTEND_END__/d' "$COMPOSE"
+  fi
+  if ! has mqtt; then
+    sed -i.bak '/# __SERVICE_MQTT_BEGIN__/,/# __SERVICE_MQTT_END__/d' "$COMPOSE"
+  fi
+  if ! has observability; then
+    sed -i.bak '/# __SERVICE_OBS_BEGIN__/,/# __SERVICE_OBS_END__/d' "$COMPOSE"
   fi
   rm -f "$COMPOSE.bak"
 
@@ -749,6 +757,24 @@ MQTT_EOF
   # .env.prod 템플릿 (운영 배포 시 사용자가 .env.prod 로 복사)
   cp "$LOCAL_CLAUDE_HOME/ops/templates/project/.env.prod.template" "$DEV/.env.prod.template"
   echo "  ✓ .env.prod.template (cp .env.prod.template .env.prod 후 값 채우기)"
+
+  # docker-compose.prod.yml — 배포용 (이미지 기반, volume 없음)
+  if [ -f "$LOCAL_CLAUDE_HOME/ops/templates/project/docker-compose.prod.yml.tmpl" ]; then
+    cp "$LOCAL_CLAUDE_HOME/ops/templates/project/docker-compose.prod.yml.tmpl" "$DEV/docker-compose.prod.yml"
+    local PROD="$DEV/docker-compose.prod.yml"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$PROD"
+    # prod 도 같은 마커 활성화/제거 로직
+    has pgvector  && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$PROD"
+    has redis     && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$PROD"
+    has ollama    && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$PROD"
+    has mlflow    && sed -i.bak "s|^  # __INCLUDE_MLFLOW__.*|  - $LC/ops/common/compose/mlflow.yml|" "$PROD"
+    has java     || sed -i.bak '/# __SERVICE_BACKEND_BEGIN__/,/# __SERVICE_BACKEND_END__/d' "$PROD"
+    has ml       || sed -i.bak '/# __SERVICE_AI_WORKER_BEGIN__/,/# __SERVICE_AI_WORKER_END__/d' "$PROD"
+    has frontend || sed -i.bak '/# __SERVICE_FRONTEND_BEGIN__/,/# __SERVICE_FRONTEND_END__/d' "$PROD"
+    sed -i.bak '/^  # __INCLUDE_/d' "$PROD"
+    rm -f "$PROD.bak"
+    echo "  ✓ docker-compose.prod.yml (배포용, 이미지 기반)"
+  fi
 
   # 5. .gitignore (시크릿 보호 + 빌드 산출물)
   cat > "$DEV/.gitignore" << 'GIEOF'

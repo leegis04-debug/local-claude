@@ -1,14 +1,12 @@
 # 마스터 docker-compose — init-dev 가 STACK 따라 마커 활성화/제거
-# 형식 주의: __INCLUDE_*__ 라인은 # 주석으로 시작 → init-dev sed 로 활성화.
-# __SERVICE_*__ 블록은 STACK 미포함 시 init-dev sed 로 통째 제거.
+# include: 는 image-only 인프라만 (postgres/redis/ollama/mlflow/vault)
+# build·configs 마운트가 있는 서비스는 메인 services: 블록의 마커로 처리
+# (include 시 ./ 경로가 include 파일 위치 기준이 되는 문제 회피).
 
 include:
   # __INCLUDE_PG__   - LOCAL_CLAUDE_PATH/ops/common/compose/postgres-pgvector.yml
   # __INCLUDE_REDIS__   - LOCAL_CLAUDE_PATH/ops/common/compose/redis.yml
-  # __INCLUDE_MQTT__   - LOCAL_CLAUDE_PATH/ops/common/compose/mqtt.yml
   # __INCLUDE_OLLAMA__   - LOCAL_CLAUDE_PATH/ops/common/compose/ollama.yml
-  # __INCLUDE_FE__   - LOCAL_CLAUDE_PATH/ops/common/compose/frontend.yml
-  # __INCLUDE_OBS__   - LOCAL_CLAUDE_PATH/ops/common/compose/observability.yml
   # __INCLUDE_MLFLOW__   - LOCAL_CLAUDE_PATH/ops/common/compose/mlflow.yml
   # __INCLUDE_VAULT__   - LOCAL_CLAUDE_PATH/ops/common/compose/vault.yml
 
@@ -18,6 +16,7 @@ services:
     build:
       context: ./spring-backend
       dockerfile: Dockerfile
+    platform: linux/amd64
     ports:
       - "8080:8080"
     environment:
@@ -40,6 +39,7 @@ services:
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: local-claude/ops-ml:latest
+    platform: linux/amd64
     ports:
       - "8001:8001"
     volumes:
@@ -56,3 +56,87 @@ services:
               count: 1
               capabilities: [gpu]
   # __SERVICE_AI_WORKER_END__
+
+  # __SERVICE_FRONTEND_BEGIN__
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+  # __SERVICE_FRONTEND_END__
+
+  # __SERVICE_MQTT_BEGIN__
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./configs/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
+  # __SERVICE_MQTT_END__
+
+  # __SERVICE_OBS_BEGIN__
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./configs/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:latest
+    volumes:
+      - ./configs/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+  # __SERVICE_OBS_END__
+
+volumes:
+  mqtt_data:
+  mqtt_log:
+  prometheus_data:
+  loki_data:
+  grafana_data:
