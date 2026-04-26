@@ -595,18 +595,110 @@ GIEOF
 # --stack 미지정 시 00-input/BASE/ 자동 탐지.
 cmd_init_stack() {
   shift  # drop "init-stack"
-  local proj="$1"; shift
+  local proj=""
   local stack=""
+  local inplace=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --stack) stack="$2"; shift 2 ;;
-      *) shift ;;
+      --stack)   stack="$2"; shift 2 ;;
+      --inplace) inplace="yes"; shift ;;
+      *)
+        if [ -z "$proj" ]; then proj="$1"; fi
+        shift
+        ;;
     esac
   done
 
+  # === inplace 모드: 현재 디렉터리에 sidecar Ops 만 추가 ===
+  # (EyekitAI 등 기존 ML 프로젝트에 MLflow/Grafana 등 인프라만 얹을 때)
+  if [ "$inplace" = "yes" ]; then
+    local DEV="$PWD"
+    proj="${proj:-$(basename "$PWD")}"
+    stack="${stack:-mlflow,observability,pgvector}"
+
+    echo "=== init-stack --inplace: $proj (STACK=$stack)"
+    echo "    대상 디렉터리: $DEV"
+    echo "    (코드 스캐폴딩 없음 — 인프라 sidecar 전용)"
+
+    local TPL="$LOCAL_CLAUDE_HOME/ops/templates/project"
+    local LC="$LOCAL_CLAUDE_HOME"
+
+    has() { case ",$stack," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+    # 코드 모듈은 inplace 모드에서 무시 (경고)
+    if has ml || has java || has frontend; then
+      echo "  ⚠ inplace 모드는 인프라만 셋업합니다. ml/java/frontend 는 무시됩니다."
+      echo "    (EyekitAI 등 기존 코드를 사용하세요)"
+    fi
+
+    # Makefile (없으면 생성, 있으면 백업 후 갱신)
+    [ -f "$DEV/Makefile" ] && cp "$DEV/Makefile" "$DEV/Makefile.preops.bak"
+    sed -e "s|__PROJECT__|$proj|g" -e "s|__STACK__|$stack|g" \
+      "$TPL/Makefile" > "$DEV/Makefile.ops"
+    echo "  ✓ Makefile.ops (기존 Makefile 보존, ops 명령은 'make -f Makefile.ops <target>')"
+
+    # docker-compose.ops.yml (기존 docker-compose.yml 과 충돌 방지)
+    cp "$TPL/docker-compose.dev.yml.tmpl" "$DEV/docker-compose.ops.yml"
+    local COMPOSE="$DEV/docker-compose.ops.yml"
+
+    has pgvector  && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
+    has redis     && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
+    has ollama    && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
+    has mlflow    && sed -i.bak "s|^  # __INCLUDE_MLFLOW__.*|  - $LC/ops/common/compose/mlflow.yml|" "$COMPOSE"
+    has vault     && sed -i.bak "s|^  # __INCLUDE_VAULT__.*|  - $LC/ops/common/compose/vault.yml|" "$COMPOSE"
+    # 코드 서비스 블록 모두 제거 (inplace 모드)
+    sed -i.bak '/# __SERVICE_BACKEND_BEGIN__/,/# __SERVICE_BACKEND_END__/d' "$COMPOSE"
+    sed -i.bak '/# __SERVICE_AI_WORKER_BEGIN__/,/# __SERVICE_AI_WORKER_END__/d' "$COMPOSE"
+    sed -i.bak '/# __SERVICE_FRONTEND_BEGIN__/,/# __SERVICE_FRONTEND_END__/d' "$COMPOSE"
+    if ! has mqtt; then
+      sed -i.bak '/# __SERVICE_MQTT_BEGIN__/,/# __SERVICE_MQTT_END__/d' "$COMPOSE"
+    fi
+    if ! has observability; then
+      sed -i.bak '/# __SERVICE_OBS_BEGIN__/,/# __SERVICE_OBS_END__/d' "$COMPOSE"
+    fi
+    sed -i.bak '/^  # __INCLUDE_/d' "$COMPOSE"
+    rm -f "$COMPOSE.bak"
+    echo "  ✓ docker-compose.ops.yml"
+
+    # .env.ops (기존 .env 와 충돌 방지)
+    [ ! -f "$DEV/.env.ops" ] && cp "$TPL/.env.dev" "$DEV/.env.ops"
+    has mlflow && grep -q MLFLOW_TRACKING_URI "$DEV/.env.ops" || \
+      echo "MLFLOW_TRACKING_URI=http://localhost:5000" >> "$DEV/.env.ops"
+    echo "  ✓ .env.ops"
+
+    # observability configs
+    if has observability; then
+      mkdir -p "$DEV/configs"
+      cp -rn "$LC/ops/common/configs/." "$DEV/configs/" 2>/dev/null || true
+      echo "  ✓ configs/{prometheus,loki,promtail,grafana}/"
+    fi
+
+    # .gitignore 보강 (기존 보존, 항목 누락 시만 추가)
+    [ -f "$DEV/.gitignore" ] || touch "$DEV/.gitignore"
+    for pat in ".env.prod" "*.pem" "*.key"; do
+      grep -qFx "$pat" "$DEV/.gitignore" || echo "$pat" >> "$DEV/.gitignore"
+    done
+    echo "  ✓ .gitignore (기존 보존, 시크릿 패턴 추가)"
+
+    echo ""
+    echo "=== inplace 셋업 완료 ==="
+    echo "사용법:"
+    echo "  make -f Makefile.ops up         # MLflow + Postgres + Grafana + Loki 기동"
+    echo "  make -f Makefile.ops mlflow-ui  # http://localhost:5000"
+    echo "  make -f Makefile.ops obs-ui     # http://localhost:3001"
+    echo ""
+    echo "EyekitAI 학습 시:"
+    echo "  export MLFLOW_TRACKING_URI=http://localhost:5000"
+    echo "  eyekit-ai train  # autolog 가 자동으로 메트릭 송신"
+    return 0
+  fi
+
+  # === 기존 모드: <PROJECTS_DIR>/<project>/dev/ 에 풀스택 셋업 ===
   if [ -z "$proj" ]; then
     echo "오류: 프로젝트명을 입력하세요."
-    echo "사용법: bash project.sh init-stack <project> [--stack <stack>]"
+    echo "사용법:"
+    echo "  bash project.sh init-stack <project> [--stack <stack>]"
+    echo "  bash project.sh init-stack [<name>] --inplace [--stack <stack>]   # 현재 디렉터리에 sidecar"
     exit 1
   fi
 
