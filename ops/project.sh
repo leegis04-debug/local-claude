@@ -631,11 +631,17 @@ cmd_init_stack() {
       echo "    (EyekitAI 등 기존 코드를 사용하세요)"
     fi
 
-    # Makefile (없으면 생성, 있으면 백업 후 갱신)
-    [ -f "$DEV/Makefile" ] && cp "$DEV/Makefile" "$DEV/Makefile.preops.bak"
-    sed -e "s|__PROJECT__|$proj|g" -e "s|__STACK__|$stack|g" \
-      "$TPL/Makefile" > "$DEV/Makefile.ops"
-    echo "  ✓ Makefile.ops (기존 Makefile 보존, ops 명령은 'make -f Makefile.ops <target>')"
+    # Makefile.ops (inplace 모드 전용: .ops 접미사 파일 사용)
+    cat > "$DEV/Makefile.ops" <<MK
+LOCAL_CLAUDE ?= $LOCAL_CLAUDE_HOME
+PROJECT       = $proj
+STACK         = $stack
+COMPOSE_FILE  = docker-compose.ops.yml
+ENV_FILE      = .env.ops
+
+include \$(LOCAL_CLAUDE)/ops/common/Makefile.common
+MK
+    echo "  ✓ Makefile.ops (COMPOSE_FILE/ENV_FILE override)"
 
     # docker-compose.ops.yml (기존 docker-compose.yml 과 충돌 방지)
     cp "$TPL/docker-compose.dev.yml.tmpl" "$DEV/docker-compose.ops.yml"

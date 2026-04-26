@@ -34,6 +34,10 @@ REQ_DIR  := $(LOCAL_CLAUDE)/ops/common/requirements
 ML_DIR   := ai-worker
 JAVA_DIR := spring-backend
 
+# docker compose 파일·env 파일 (inplace 모드는 .ops 접미사로 override)
+COMPOSE_FILE ?= $(COMPOSE_FILE)
+ENV_FILE     ?= .env.dev
+
 # ── 공통 Python 타겟 ────────────────────────────────────────
 .PHONY: setup test lint clean
 
@@ -67,17 +71,17 @@ clean:  ## 빌드 산출물 정리
 .PHONY: up down ps logs-all restart
 
 up:  ## docker compose 전체 스택 시작 (백그라운드)
-	docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up --build -d
 	@echo "✓ stack up — make ps 로 확인"
 
 down:  ## 전체 스택 중단
-	docker compose -f docker-compose.dev.yml down
+	docker compose -f $(COMPOSE_FILE) down
 
 ps:  ## 서비스 상태
-	docker compose -f docker-compose.dev.yml ps
+	docker compose -f $(COMPOSE_FILE) ps
 
 logs-all:  ## 전체 서비스 로그 follow
-	docker compose -f docker-compose.dev.yml logs -f
+	docker compose -f $(COMPOSE_FILE) logs -f
 
 restart:  ## down + up
 	$(MAKE) down
@@ -143,10 +147,10 @@ ai-build:  ## AI Worker Docker 이미지 단독 빌드
 	  -t $(PROJECT)-ai:latest $(ML_DIR)/
 
 ai-logs:  ## AI Worker 로그 (compose)
-	docker compose -f docker-compose.dev.yml logs -f ai-worker
+	docker compose -f $(COMPOSE_FILE) logs -f ai-worker
 
 ai-shell:  ## AI Worker 컨테이너 셸
-	docker compose -f docker-compose.dev.yml exec ai-worker bash
+	docker compose -f $(COMPOSE_FILE) exec ai-worker bash
 
 # ── 호스트 직접 실행 (M2 MPS / 로컬 NVIDIA GPU 활용) ────────
 .PHONY: ai-host ai-host-setup up-noai
@@ -162,8 +166,8 @@ ai-host:  ## ai-worker 를 호스트에서 직접 실행 (Docker 우회, GPU 사
 	  --host 0.0.0.0 --port 8001 --reload
 
 up-noai:  ## ai-worker 빼고 docker compose 기동 (ai-worker 는 호스트에서 별도 실행)
-	docker compose --env-file .env.dev -f docker-compose.dev.yml up -d \
-	  $$(docker compose -f docker-compose.dev.yml config --services | grep -v '^ai-worker$$')
+	docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up -d \
+	  $$(docker compose -f $(COMPOSE_FILE) config --services | grep -v '^ai-worker$$')
 	@echo "✓ ai-worker 제외 모든 서비스 기동"
 	@echo "  → 별도 터미널에서: make ai-host  (M2 GPU 활용)"
 endif
@@ -188,16 +192,16 @@ backend-build:  ## Spring Backend Docker 이미지 단독 빌드
 	docker build -t $(PROJECT)-backend:latest -f $(JAVA_DIR)/Dockerfile $(JAVA_DIR)/
 
 backend-logs:  ## Spring Backend 로그 (compose)
-	docker compose -f docker-compose.dev.yml logs -f spring-backend
+	docker compose -f $(COMPOSE_FILE) logs -f spring-backend
 
 backend-shell:  ## Spring Backend 컨테이너 셸
-	docker compose -f docker-compose.dev.yml exec spring-backend sh
+	docker compose -f $(COMPOSE_FILE) exec spring-backend sh
 
 deploy-staging:  ## Staging 배포 (4090 전체 스택)
 	rsync -avz --exclude='.gradle' --exclude='build' --exclude='.venv' --exclude='node_modules' \
 	  . $(REMOTE):~/services/$(PROJECT)/
 	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
-	  docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d'
+	  docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up --build -d'
 	@echo "✓ Staging: http://100.105.221.243:$(STAGE_PORT)"
 
 deploy-prod:  ## Production 배포 (수동 승인)
@@ -205,12 +209,12 @@ deploy-prod:  ## Production 배포 (수동 승인)
 	rsync -avz --exclude='.gradle' --exclude='build' --exclude='.venv' --exclude='node_modules' \
 	  . $(REMOTE):~/services/$(PROJECT)/
 	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
-	  docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d'
+	  docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) up --build -d'
 
 rollback:  ## 이전 이미지로 롤백
 	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
 	  docker tag $(PROJECT)-backend:prod-prev $(PROJECT)-backend:prod && \
-	  docker compose -f docker-compose.dev.yml up -d'
+	  docker compose -f $(COMPOSE_FILE) up -d'
 
 status:  ## 원격 서비스 상태
 	@ssh $(REMOTE) 'cd ~/services/$(PROJECT) && docker compose ps' 2>/dev/null
@@ -230,7 +234,7 @@ fe-build:  ## Frontend 빌드 (npm run build)
 	cd frontend && npm run build
 
 fe-logs:  ## Frontend 로그 (compose)
-	docker compose -f docker-compose.dev.yml logs -f frontend
+	docker compose -f $(COMPOSE_FILE) logs -f frontend
 endif
 
 # ── C/C++ (cmake) ───────────────────────────────────────────
@@ -256,12 +260,12 @@ ifeq ($(HAS_PG),yes)
 .PHONY: db-shell db-reset
 
 db-shell:  ## psql 접속
-	docker compose -f docker-compose.dev.yml exec postgres \
+	docker compose -f $(COMPOSE_FILE) exec postgres \
 	  psql -U $${POSTGRES_USER:-dev} -d $${POSTGRES_DB:-app}
 
 db-reset:  ## DB 볼륨 초기화 후 재시작
-	docker compose -f docker-compose.dev.yml down -v
-	docker compose -f docker-compose.dev.yml up -d postgres
+	docker compose -f $(COMPOSE_FILE) down -v
+	docker compose -f $(COMPOSE_FILE) up -d postgres
 endif
 
 # ── Observability (Prometheus + Grafana + Loki) ─────────────
@@ -277,7 +281,7 @@ prom-ui:  ## Prometheus UI (http://localhost:9090)
 	@command -v open >/dev/null && open http://localhost:9090 || true
 
 obs-logs:  ## Observability 스택 로그
-	docker compose -f docker-compose.dev.yml logs -f prometheus grafana loki promtail
+	docker compose -f $(COMPOSE_FILE) logs -f prometheus grafana loki promtail
 endif
 
 # ── MLflow ──────────────────────────────────────────────────
@@ -289,7 +293,7 @@ mlflow-ui:  ## MLflow Tracking UI (http://localhost:5000)
 	@command -v open >/dev/null && open http://localhost:5000 || true
 
 mlflow-logs:
-	docker compose -f docker-compose.dev.yml logs -f mlflow
+	docker compose -f $(COMPOSE_FILE) logs -f mlflow
 
 export-onnx:  ## PyTorch ckpt → ONNX 변환 (CHECKPOINT=path)
 	@[ -n "$(CHECKPOINT)" ] || (echo "사용법: make export-onnx CHECKPOINT=path/to/model.pt"; exit 1)
@@ -305,7 +309,7 @@ vault-ui:  ## Vault UI (http://localhost:8200)
 	@command -v open >/dev/null && open http://localhost:8200 || true
 
 vault-shell:  ## Vault CLI 컨테이너 진입
-	docker compose -f docker-compose.dev.yml exec vault sh
+	docker compose -f $(COMPOSE_FILE) exec vault sh
 endif
 
 # ── Kubernetes (Helm) ───────────────────────────────────────
