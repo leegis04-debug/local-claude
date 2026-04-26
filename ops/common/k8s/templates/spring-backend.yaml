@@ -1,0 +1,65 @@
+{{- if .Values.springBackend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}-backend
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: spring-backend
+spec:
+  replicas: {{ .Values.springBackend.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "app.fullname" . }}
+      app.kubernetes.io/component: spring-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "app.fullname" . }}
+        app.kubernetes.io/component: spring-backend
+    spec:
+      containers:
+        - name: spring-backend
+          image: "{{ .Values.springBackend.image.repository }}:{{ .Values.springBackend.image.tag }}"
+          imagePullPolicy: {{ .Values.springBackend.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.springBackend.port }}
+          env:
+            {{- range $k, $v := .Values.springBackend.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://{{ include "app.fullname" . }}-postgres:5432/{{ .Values.project }}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "app.fullname" . }}-secrets
+                  key: postgresPassword
+            - name: AI_WORKER_URL
+              value: http://{{ include "app.fullname" . }}-ai-worker:{{ .Values.aiWorker.port }}
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: {{ .Values.springBackend.port }}
+            initialDelaySeconds: 30
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: {{ .Values.springBackend.port }}
+            initialDelaySeconds: 60
+          resources:
+            {{- toYaml .Values.springBackend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "app.fullname" . }}-backend
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "app.fullname" . }}
+    app.kubernetes.io/component: spring-backend
+  ports:
+    - port: {{ .Values.springBackend.port }}
+      targetPort: {{ .Values.springBackend.port }}
+{{- end }}

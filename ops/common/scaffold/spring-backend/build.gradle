@@ -30,6 +30,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 
+    // Observability — Prometheus 메트릭 노출 (/actuator/prometheus)
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+
     // Spring AI
     implementation 'org.springframework.ai:spring-ai-starter-model-ollama'
     implementation 'org.springframework.ai:spring-ai-starter-vector-store-pgvector'

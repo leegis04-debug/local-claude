@@ -653,11 +653,14 @@ cmd_init_stack() {
   local LC="$LOCAL_CLAUDE_HOME"
 
   # include 마커 활성화: 줄 전체를 "  - <절대경로>" 로 치환 (YAML 2-space 들여쓰기)
-  has pgvector && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
-  has redis    && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
-  has mqtt     && sed -i.bak "s|^  # __INCLUDE_MQTT__.*|  - $LC/ops/common/compose/mqtt.yml|" "$COMPOSE"
-  has ollama   && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
-  has frontend && sed -i.bak "s|^  # __INCLUDE_FE__.*|  - $LC/ops/common/compose/frontend.yml|" "$COMPOSE"
+  has pgvector       && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
+  has redis          && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
+  has mqtt           && sed -i.bak "s|^  # __INCLUDE_MQTT__.*|  - $LC/ops/common/compose/mqtt.yml|" "$COMPOSE"
+  has ollama         && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
+  has frontend       && sed -i.bak "s|^  # __INCLUDE_FE__.*|  - $LC/ops/common/compose/frontend.yml|" "$COMPOSE"
+  has observability  && sed -i.bak "s|^  # __INCLUDE_OBS__.*|  - $LC/ops/common/compose/observability.yml|" "$COMPOSE"
+  has mlflow         && sed -i.bak "s|^  # __INCLUDE_MLFLOW__.*|  - $LC/ops/common/compose/mlflow.yml|" "$COMPOSE"
+  has vault          && sed -i.bak "s|^  # __INCLUDE_VAULT__.*|  - $LC/ops/common/compose/vault.yml|" "$COMPOSE"
 
   # 사용 안 하는 서비스 블록 제거 (BEGIN ~ END 마커 사이 통째로)
   if ! has java; then
@@ -716,8 +719,46 @@ MQTT_EOF
     echo "  ✓ configs/mosquitto.conf"
   fi
 
-  # 5. .gitignore
+  # CI 워크플로우 자동 복사 (모든 STACK 공통)
+  mkdir -p "$DEV/.github/workflows"
+  cp "$LOCAL_CLAUDE_HOME/ops/common/scaffold/ci/.github/workflows/ci.yml" \
+     "$DEV/.github/workflows/ci.yml"
+  echo "  ✓ .github/workflows/ci.yml"
+
+  # Observability configs 자동 복사
+  if has observability; then
+    cp -r "$LOCAL_CLAUDE_HOME/ops/common/configs" "$DEV/configs"
+    echo "  ✓ configs/{prometheus,loki,promtail,grafana}/"
+  fi
+
+  # MLflow 환경변수 추가 (.env.dev 에)
+  if has mlflow; then
+    echo "MLFLOW_TRACKING_URI=http://mlflow:5000" >> "$DEV/.env.dev"
+    echo "  ✓ MLFLOW_TRACKING_URI 환경변수 추가"
+  fi
+
+  # K8s values.yaml 자동 생성 (옵션)
+  if has k8s; then
+    mkdir -p "$DEV/k8s"
+    cp "$LOCAL_CLAUDE_HOME/ops/common/k8s/values.yaml" "$DEV/k8s/values.yaml"
+    sed -i.bak "s|^project:.*|project: $proj|" "$DEV/k8s/values.yaml"
+    rm -f "$DEV/k8s/values.yaml.bak"
+    echo "  ✓ k8s/values.yaml (helm template/install 가능)"
+  fi
+
+  # .env.prod 템플릿 (운영 배포 시 사용자가 .env.prod 로 복사)
+  cp "$LOCAL_CLAUDE_HOME/ops/templates/project/.env.prod.template" "$DEV/.env.prod.template"
+  echo "  ✓ .env.prod.template (cp .env.prod.template .env.prod 후 값 채우기)"
+
+  # 5. .gitignore (시크릿 보호 + 빌드 산출물)
   cat > "$DEV/.gitignore" << 'GIEOF'
+# 시크릿 (절대 커밋 금지)
+.env.prod
+.env.local
+*.pem
+*.key
+
+# Python
 .venv/
 __pycache__/
 *.pyc
@@ -725,16 +766,29 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 *.egg-info/
-dist/
-build/
+
+# Java/Gradle
 .gradle/
+build/
 out/
+
+# Node
 node_modules/
 .next/
+
+# 빌드 산출물
+dist/
+
+# ML 산출물 (NAS/MLflow 사용 권장)
 experiments/*/artifacts/
+mlruns/
 *.pt
 *.pth
 *.onnx
+
+# K8s 로컬 오버라이드
+k8s/values.local.yaml
+
 .DS_Store
 GIEOF
 

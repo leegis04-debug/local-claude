@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app
+description: Spring Boot + Spring AI + Python AI Worker + Frontend stack
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

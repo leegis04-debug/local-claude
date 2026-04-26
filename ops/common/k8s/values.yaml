@@ -1,0 +1,66 @@
+# 기본 values — 각 프로젝트가 dev/k8s/values.yaml 로 오버라이드.
+project: app
+namespace: default
+
+springBackend:
+  enabled: true
+  image:
+    repository: app-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  env:
+    SPRING_PROFILES_ACTIVE: kubernetes
+
+aiWorker:
+  enabled: true
+  image:
+    repository: app-ai
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8001
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 2Gi
+
+frontend:
+  enabled: true
+  image:
+    repository: app-frontend
+    tag: latest
+  replicas: 1
+  port: 3000
+
+postgres:
+  enabled: true
+  image: ankane/pgvector:latest
+  storage: 10Gi
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+
+ingress:
+  enabled: false
+  className: nginx
+  host: app.example.com
+  tls:
+    enabled: false
+    secretName: app-tls
+
+secrets:
+  postgresPassword: changeme
+  grafanaPassword: changeme

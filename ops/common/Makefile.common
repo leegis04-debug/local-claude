@@ -23,6 +23,11 @@ HAS_REDIS  := $(if $(findstring redis,$(STACK)),yes,)
 HAS_MQTT   := $(if $(findstring mqtt,$(STACK)),yes,)
 HAS_OLLAMA := $(if $(findstring ollama,$(STACK)),yes,)
 HAS_FE     := $(if $(findstring frontend,$(STACK)),yes,)
+# 운영급 모듈
+HAS_OBS    := $(if $(findstring observability,$(STACK)),yes,)
+HAS_MLFLOW := $(if $(findstring mlflow,$(STACK)),yes,)
+HAS_VAULT  := $(if $(findstring vault,$(STACK)),yes,)
+HAS_K8S    := $(if $(findstring k8s,$(STACK)),yes,)
 
 # 서비스는 항상 서브디렉터리에 배치 (일관성)
 REQ_DIR  := $(LOCAL_CLAUDE)/ops/common/requirements
@@ -201,6 +206,84 @@ db-reset:  ## DB 볼륨 초기화 후 재시작
 	docker compose -f docker-compose.dev.yml down -v
 	docker compose -f docker-compose.dev.yml up -d postgres
 endif
+
+# ── Observability (Prometheus + Grafana + Loki) ─────────────
+ifeq ($(HAS_OBS),yes)
+.PHONY: obs-ui prom-ui obs-logs
+
+obs-ui:  ## Grafana 대시보드 열기 (http://localhost:3001)
+	@echo "Grafana: http://localhost:3001 (admin/admin)"
+	@command -v open >/dev/null && open http://localhost:3001 || true
+
+prom-ui:  ## Prometheus UI (http://localhost:9090)
+	@echo "Prometheus: http://localhost:9090"
+	@command -v open >/dev/null && open http://localhost:9090 || true
+
+obs-logs:  ## Observability 스택 로그
+	docker compose -f docker-compose.dev.yml logs -f prometheus grafana loki promtail
+endif
+
+# ── MLflow ──────────────────────────────────────────────────
+ifeq ($(HAS_MLFLOW),yes)
+.PHONY: mlflow-ui mlflow-logs export-onnx
+
+mlflow-ui:  ## MLflow Tracking UI (http://localhost:5000)
+	@echo "MLflow: http://localhost:5000"
+	@command -v open >/dev/null && open http://localhost:5000 || true
+
+mlflow-logs:
+	docker compose -f docker-compose.dev.yml logs -f mlflow
+
+export-onnx:  ## PyTorch ckpt → ONNX 변환 (CHECKPOINT=path)
+	@[ -n "$(CHECKPOINT)" ] || (echo "사용법: make export-onnx CHECKPOINT=path/to/model.pt"; exit 1)
+	.venv/bin/python $(ML_DIR)/src/export_onnx.py --checkpoint $(CHECKPOINT) $(ARGS)
+endif
+
+# ── Vault (HashiCorp) ───────────────────────────────────────
+ifeq ($(HAS_VAULT),yes)
+.PHONY: vault-ui vault-shell
+
+vault-ui:  ## Vault UI (http://localhost:8200)
+	@echo "Vault: http://localhost:8200 (token: dev-root-token)"
+	@command -v open >/dev/null && open http://localhost:8200 || true
+
+vault-shell:  ## Vault CLI 컨테이너 진입
+	docker compose -f docker-compose.dev.yml exec vault sh
+endif
+
+# ── Kubernetes (Helm) ───────────────────────────────────────
+ifeq ($(HAS_K8S),yes)
+HELM_RELEASE ?= $(PROJECT)
+HELM_NS      ?= default
+HELM_DIR     := $(LOCAL_CLAUDE)/ops/common/k8s
+
+.PHONY: k8s-template k8s-install k8s-upgrade k8s-uninstall k8s-values
+
+k8s-values:  ## 프로젝트별 values.yaml 생성 (없으면)
+	@[ -f k8s/values.yaml ] || (mkdir -p k8s && cp $(HELM_DIR)/values.yaml k8s/values.yaml && \
+	  sed -i.bak "s/^project:.*/project: $(PROJECT)/" k8s/values.yaml && rm -f k8s/values.yaml.bak)
+	@echo "✓ k8s/values.yaml ready"
+
+k8s-template: k8s-values  ## helm template (manifest 미리보기)
+	helm template $(HELM_RELEASE) $(HELM_DIR) -f k8s/values.yaml --namespace $(HELM_NS)
+
+k8s-install: k8s-values  ## helm install/upgrade
+	helm upgrade --install $(HELM_RELEASE) $(HELM_DIR) -f k8s/values.yaml \
+	  --namespace $(HELM_NS) --create-namespace
+
+k8s-upgrade: k8s-values
+	helm upgrade $(HELM_RELEASE) $(HELM_DIR) -f k8s/values.yaml --namespace $(HELM_NS)
+
+k8s-uninstall:
+	helm uninstall $(HELM_RELEASE) --namespace $(HELM_NS)
+endif
+
+# ── CI 로컬 검증 (act) ──────────────────────────────────────
+.PHONY: verify-ci
+
+verify-ci:  ## .github/workflows/ci.yml 로컬 실행 (act 필요)
+	@command -v act >/dev/null || (echo "act 설치 필요: brew install act"; exit 1)
+	act -W .github/workflows/ci.yml
 
 # ── help ────────────────────────────────────────────────────
 .PHONY: help

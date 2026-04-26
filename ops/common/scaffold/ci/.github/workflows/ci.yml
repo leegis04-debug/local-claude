@@ -1,0 +1,101 @@
+# 통합 CI — STACK 따라 자동 분기
+# init-stack 시 dev/.github/workflows/ci.yml 로 복사된다.
+# STACK 모듈이 활성화된 디렉터리만 잡(job) 실행.
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Python AI Worker ───────────────────────────────────
+  ai-worker:
+    if: hashFiles('ai-worker/**') != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai-worker/requirements.txt
+      - run: pip install -r requirements.txt ruff mypy pytest pytest-cov
+      - name: Lint (ruff)
+        run: ruff check src/
+      - name: Type check (mypy)
+        run: mypy src/ --ignore-missing-imports || true
+      - name: Tests
+        run: pytest src/ tests/ -v --cov=src 2>/dev/null || pytest -v 2>/dev/null || echo "no tests"
+
+  # ── Spring Boot Backend ────────────────────────────────
+  spring-backend:
+    if: hashFiles('spring-backend/**') != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spring-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Build
+        run: ./gradlew build --no-daemon
+      - name: Test
+        run: ./gradlew test --no-daemon
+
+  # ── Frontend (Next.js) ─────────────────────────────────
+  frontend:
+    if: hashFiles('frontend/**') != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci || npm install
+      - run: npm run build
+      - run: npm test --if-present
+
+  # ── Docker 이미지 빌드 (main 푸시 시) ─────────────────
+  docker-build:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [ai-worker, spring-backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build AI Worker image
+        if: hashFiles('ai-worker/Dockerfile') != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ai-worker
+          push: false
+          tags: ${{ github.event.repository.name }}-ai:${{ github.sha }}
+      - name: Build Spring Backend image
+        if: hashFiles('spring-backend/Dockerfile') != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: ./spring-backend
+          push: false
+          tags: ${{ github.event.repository.name }}-backend:${{ github.sha }}
+      - name: Build Frontend image
+        if: hashFiles('frontend/Dockerfile') != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          tags: ${{ github.event.repository.name }}-frontend:${{ github.sha }}

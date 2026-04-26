@@ -11,8 +11,12 @@
 
 from fastapi import FastAPI
 from pydantic import BaseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="AI Worker", version="0.1.0")
+
+# Prometheus /metrics 엔드포인트 자동 노출 (HTTP 지연/카운트 자동 수집)
+Instrumentator().instrument(app).expose(app)
 
 
 class InferRequest(BaseModel):
