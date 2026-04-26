@@ -1,0 +1,5 @@
+# docker compose 환경 override
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: update

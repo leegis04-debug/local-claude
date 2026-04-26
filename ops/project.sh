@@ -2,7 +2,8 @@
 # 프로젝트 관리 스크립트
 # 사용법:
 #   bash project.sh new <이름> [jw|re]  — 새 프로젝트 생성 (트랙: jw=수주문서, re=연구개발)
-#   bash project.sh init-dev <이름>     — dev/ 환경 스캐폴딩 (jw→DevOps, re→MLOps)
+#   bash project.sh init-dev <이름>     — dev/ 환경 스캐폴딩 (jw→DevOps, re→MLOps, 레거시)
+#   bash project.sh init-stack <이름> [--stack <stack>] — STACK-aware 통합 dev/ 스캐폴딩
 #   bash project.sh delete <이름>       — 프로젝트 삭제
 #   bash project.sh list                — 프로젝트 목록
 #   bash project.sh status              — 전체 프로젝트 상태
@@ -588,6 +589,174 @@ GIEOF
   fi
 }
 
+# === STACK-aware init-dev (통합 Ops) ===
+# 사용법:
+#   bash project.sh init-stack <project> [--stack python,ml,java,pgvector,redis,frontend]
+# --stack 미지정 시 00-input/BASE/ 자동 탐지.
+cmd_init_stack() {
+  shift  # drop "init-stack"
+  local proj="$1"; shift
+  local stack=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stack) stack="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  if [ -z "$proj" ]; then
+    echo "오류: 프로젝트명을 입력하세요."
+    echo "사용법: bash project.sh init-stack <project> [--stack <stack>]"
+    exit 1
+  fi
+
+  local PROJECT_DIR="$PROJECTS_DIR/$proj"
+  if [ ! -d "$PROJECT_DIR" ]; then
+    echo "오류: $proj 프로젝트가 존재하지 않습니다."
+    exit 1
+  fi
+
+  # STACK 자동 탐지 (미지정 시 BASE/ 탐색)
+  if [ -z "$stack" ]; then
+    stack="python"
+    if [ -d "$PROJECT_DIR/00-input/BASE" ]; then
+      grep -rli "torch\|pytorch" "$PROJECT_DIR/00-input/BASE" >/dev/null 2>&1 && stack="$stack,ml"
+      find "$PROJECT_DIR/00-input/BASE" -name 'CMakeLists.txt' 2>/dev/null | grep -q . && stack="$stack,cpp"
+      find "$PROJECT_DIR/00-input/BASE" \( -name '*.java' -o -name 'build.gradle' -o -name 'pom.xml' \) 2>/dev/null | grep -q . && stack="$stack,java"
+      grep -rli "fastapi\|uvicorn" "$PROJECT_DIR/00-input/BASE" >/dev/null 2>&1 && [ -z "${stack##*ml*}" ] || true
+    fi
+    echo "[자동 탐지] STACK=$stack"
+  fi
+
+  local DEV="$PROJECT_DIR/dev"
+  local TPL="$LOCAL_CLAUDE_HOME/ops/templates/project"
+  local SCAFFOLD="$LOCAL_CLAUDE_HOME/ops/common/scaffold"
+
+  echo "=== init-stack: $proj (STACK=$stack) ==="
+  mkdir -p "$DEV"
+
+  # has() 헬퍼: STACK에 모듈 포함 여부
+  has() { case ",$stack," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+  # 1. thin Makefile (sed 치환)
+  sed -e "s|__PROJECT__|$proj|g" -e "s|__STACK__|$stack|g" \
+    "$TPL/Makefile" > "$DEV/Makefile"
+  echo "  ✓ Makefile (STACK=$stack)"
+
+  # 2. .env.dev
+  cp "$TPL/.env.dev" "$DEV/.env.dev"
+  echo "  ✓ .env.dev"
+
+  # 3. docker-compose.dev.yml (마스터에서 마커 활성화)
+  cp "$TPL/docker-compose.dev.yml.tmpl" "$DEV/docker-compose.dev.yml"
+  local COMPOSE="$DEV/docker-compose.dev.yml"
+  local LC="$LOCAL_CLAUDE_HOME"
+
+  # include 마커 활성화: 줄 전체를 "  - <절대경로>" 로 치환 (YAML 2-space 들여쓰기)
+  has pgvector && sed -i.bak "s|^  # __INCLUDE_PG__.*|  - $LC/ops/common/compose/postgres-pgvector.yml|" "$COMPOSE"
+  has redis    && sed -i.bak "s|^  # __INCLUDE_REDIS__.*|  - $LC/ops/common/compose/redis.yml|" "$COMPOSE"
+  has mqtt     && sed -i.bak "s|^  # __INCLUDE_MQTT__.*|  - $LC/ops/common/compose/mqtt.yml|" "$COMPOSE"
+  has ollama   && sed -i.bak "s|^  # __INCLUDE_OLLAMA__.*|  - $LC/ops/common/compose/ollama.yml|" "$COMPOSE"
+  has frontend && sed -i.bak "s|^  # __INCLUDE_FE__.*|  - $LC/ops/common/compose/frontend.yml|" "$COMPOSE"
+
+  # 사용 안 하는 서비스 블록 제거 (BEGIN ~ END 마커 사이 통째로)
+  if ! has java; then
+    sed -i.bak '/# __SERVICE_BACKEND_BEGIN__/,/# __SERVICE_BACKEND_END__/d' "$COMPOSE"
+  fi
+  if ! has ml; then
+    sed -i.bak '/# __SERVICE_AI_WORKER_BEGIN__/,/# __SERVICE_AI_WORKER_END__/d' "$COMPOSE"
+  fi
+  rm -f "$COMPOSE.bak"
+
+  # 남은 __INCLUDE_* 주석 라인 제거 (활성화 안 된 항목)
+  sed -i.bak '/^  # __INCLUDE_/d' "$COMPOSE"
+  rm -f "$COMPOSE.bak"
+
+  # include: 섹션 직후가 비었으면 (활성화된 라인 0개) include: 라인 자체 제거
+  if ! awk '/^include:/{found=1; next} found && /^  - /{print; exit}' "$COMPOSE" | grep -q .; then
+    sed -i.bak '/^include:/d' "$COMPOSE"
+    rm -f "$COMPOSE.bak"
+  fi
+  echo "  ✓ docker-compose.dev.yml"
+
+  # 4. 언어 모듈 스캐폴딩 복사
+  if has ml; then
+    cp -r "$SCAFFOLD/ai-worker" "$DEV/ai-worker"
+    echo "  ✓ ai-worker/ (Python AI Worker)"
+  fi
+
+  if has java; then
+    cp -r "$SCAFFOLD/spring-backend" "$DEV/spring-backend"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$DEV/spring-backend/settings.gradle"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$DEV/spring-backend/src/main/resources/application.yml"
+    rm -f "$DEV/spring-backend/settings.gradle.bak"
+    rm -f "$DEV/spring-backend/src/main/resources/application.yml.bak"
+    echo "  ✓ spring-backend/ (Spring AI + JPA + pgvector)"
+  fi
+
+  if has frontend; then
+    cp -r "$SCAFFOLD/frontend" "$DEV/frontend"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$DEV/frontend/package.json"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$DEV/frontend/src/app/layout.tsx"
+    sed -i.bak "s|__PROJECT__|$proj|g" "$DEV/frontend/src/app/page.tsx"
+    rm -f "$DEV/frontend"/{package.json,src/app/layout.tsx,src/app/page.tsx}.bak
+    echo "  ✓ frontend/ (Next.js 14)"
+  fi
+
+  if has mqtt; then
+    mkdir -p "$DEV/configs"
+    cat > "$DEV/configs/mosquitto.conf" << 'MQTT_EOF'
+listener 1883
+allow_anonymous true
+
+listener 9001
+protocol websockets
+allow_anonymous true
+MQTT_EOF
+    echo "  ✓ configs/mosquitto.conf"
+  fi
+
+  # 5. .gitignore
+  cat > "$DEV/.gitignore" << 'GIEOF'
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.gradle/
+out/
+node_modules/
+.next/
+experiments/*/artifacts/
+*.pt
+*.pth
+*.onnx
+.DS_Store
+GIEOF
+
+  # 6. Git 초기화
+  cd "$DEV"
+  if [ ! -d ".git" ]; then
+    git init -q
+    git add -A
+    git commit -qm "init: $proj dev/ scaffold (STACK=$stack)"
+    echo "  ✓ git init + 초기 커밋"
+  fi
+  cd - >/dev/null
+
+  echo ""
+  echo "=== init-stack 완료: $DEV ==="
+  echo "다음 명령:"
+  echo "  cd $DEV"
+  echo "  make help              # 활성 타겟 확인"
+  echo "  make setup             # Python venv + 의존성"
+  echo "  make up                # docker compose 전체 스택"
+}
+
 # === BACKFLOW (Phase 5 §5.4b — 실험 결과 → 문서 역류) ===
 cmd_backflow() {
   if [ -z "$PROJECT_NAME" ]; then
@@ -1160,6 +1329,7 @@ COMPANY_HOST="${COMPANY_HOST:-company}"
 case "$CMD" in
   new)         cmd_new ;;
   init-dev)    cmd_init_dev ;;
+  init-stack)  cmd_init_stack "$@" ;;
   sync)        cmd_sync "$@" ;;
   deploy)      cmd_deploy "$@" ;;
   backflow)    cmd_backflow ;;

@@ -1,0 +1,216 @@
+# local-claude 통합 Ops Makefile (include 방식)
+#
+# 프로젝트 dev/Makefile 에서 다음과 같이 include:
+#   LOCAL_CLAUDE ?= $(HOME)/workspace/local-claude
+#   PROJECT       = my-project
+#   STACK         = python,ml,java,pgvector,redis,frontend
+#   include $(LOCAL_CLAUDE)/ops/common/Makefile.common
+
+STACK        ?= python
+LOCAL_CLAUDE ?= $(HOME)/workspace/local-claude
+PROJECT      ?= $(shell basename $(CURDIR))
+PYTHON       ?= python3
+REMOTE       ?= ljw@100.105.221.243
+
+# ── STACK 분해 ──────────────────────────────────────────────
+# 언어 모듈
+HAS_ML     := $(if $(findstring ml,$(STACK)),yes,)
+HAS_JAVA   := $(if $(findstring java,$(STACK)),yes,)
+HAS_CPP    := $(if $(findstring cpp,$(STACK)),yes,)
+# 인프라 모듈
+HAS_PG     := $(if $(findstring pgvector,$(STACK)),yes,)
+HAS_REDIS  := $(if $(findstring redis,$(STACK)),yes,)
+HAS_MQTT   := $(if $(findstring mqtt,$(STACK)),yes,)
+HAS_OLLAMA := $(if $(findstring ollama,$(STACK)),yes,)
+HAS_FE     := $(if $(findstring frontend,$(STACK)),yes,)
+
+# 서비스는 항상 서브디렉터리에 배치 (일관성)
+REQ_DIR  := $(LOCAL_CLAUDE)/ops/common/requirements
+ML_DIR   := ai-worker
+JAVA_DIR := spring-backend
+
+# ── 공통 Python 타겟 ────────────────────────────────────────
+.PHONY: setup test lint clean
+
+setup:  ## venv + STACK 의존성 설치
+	$(PYTHON) -m venv .venv
+	.venv/bin/pip install -q -r $(REQ_DIR)/base.txt
+ifeq ($(HAS_ML),yes)
+	.venv/bin/pip install -q -r $(REQ_DIR)/ml.txt
+endif
+ifeq ($(HAS_CPP),yes)
+	.venv/bin/pip install -q -r $(REQ_DIR)/cpp.txt
+endif
+	@if [ -f $(ML_DIR)/requirements.txt ]; then .venv/bin/pip install -q -r $(ML_DIR)/requirements.txt; fi
+	@if [ -f requirements.txt ]; then .venv/bin/pip install -q -r requirements.txt; fi
+	-.venv/bin/pre-commit install 2>/dev/null
+	@echo "✓ setup complete (STACK=$(STACK))"
+
+test:  ## pytest 실행
+	@if [ -d $(ML_DIR)/src ]; then .venv/bin/pytest $(ML_DIR)/src $(ML_DIR)/tests -v 2>/dev/null || true; fi
+	@if [ -d tests ]; then .venv/bin/pytest tests -v 2>/dev/null || true; fi
+
+lint:  ## ruff + mypy
+	-.venv/bin/ruff check $(ML_DIR)/src 2>/dev/null
+	-.venv/bin/mypy $(ML_DIR)/src --ignore-missing-imports 2>/dev/null
+
+clean:  ## 빌드 산출물 정리
+	rm -rf .venv __pycache__ .pytest_cache .mypy_cache
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# ── 전체 스택 (docker compose 마스터) ──────────────────────
+.PHONY: up down ps logs-all restart
+
+up:  ## docker compose 전체 스택 시작 (백그라운드)
+	docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d
+	@echo "✓ stack up — make ps 로 확인"
+
+down:  ## 전체 스택 중단
+	docker compose -f docker-compose.dev.yml down
+
+ps:  ## 서비스 상태
+	docker compose -f docker-compose.dev.yml ps
+
+logs-all:  ## 전체 서비스 로그 follow
+	docker compose -f docker-compose.dev.yml logs -f
+
+restart:  ## down + up
+	$(MAKE) down
+	$(MAKE) up
+
+# ── ML (Python AI Worker) ───────────────────────────────────
+ifeq ($(HAS_ML),yes)
+.PHONY: train eval experiments sync-nas ai-build ai-logs ai-shell
+
+train:  ## 학습 실행 (src/train.py)
+	.venv/bin/python $(ML_DIR)/src/train.py $(ARGS)
+
+eval:  ## 평가 실행 (src/eval.py)
+	.venv/bin/python $(ML_DIR)/src/eval.py $(ARGS)
+
+experiments:  ## 실험 목록
+	@ls -lt experiments/*/experiment.json 2>/dev/null | head -10 || echo "실험 없음"
+
+sync-nas:  ## NAS 실험 동기화
+	@if [ -z "$(LAB_TRACKER_NAS_TARGET)" ]; then echo "LAB_TRACKER_NAS_TARGET 미설정"; exit 1; fi
+	rsync -avz experiments/ $(LAB_TRACKER_NAS_TARGET)$(PROJECT)/
+
+ai-build:  ## AI Worker Docker 이미지 단독 빌드
+	docker build --build-arg BASE_IMAGE=local-claude/ops-ml:latest \
+	  -t $(PROJECT)-ai:latest $(ML_DIR)/
+
+ai-logs:  ## AI Worker 로그 (compose)
+	docker compose -f docker-compose.dev.yml logs -f ai-worker
+
+ai-shell:  ## AI Worker 컨테이너 셸
+	docker compose -f docker-compose.dev.yml exec ai-worker bash
+endif
+
+# ── Java (Spring Boot + Spring AI) ─────────────────────────
+ifeq ($(HAS_JAVA),yes)
+STAGE_PORT ?= 8090
+PROD_PORT  ?= 8080
+
+.PHONY: build-java test-java run-java backend-build backend-logs backend-shell deploy-staging deploy-prod rollback status logs
+
+build-java:  ## Gradle bootJar
+	cd $(JAVA_DIR) && ./gradlew clean bootJar --no-daemon
+
+test-java:  ## Gradle test
+	cd $(JAVA_DIR) && ./gradlew test
+
+run-java:  ## bootRun (로컬 JDK21 필요)
+	cd $(JAVA_DIR) && ./gradlew bootRun
+
+backend-build:  ## Spring Backend Docker 이미지 단독 빌드
+	docker build -t $(PROJECT)-backend:latest -f $(JAVA_DIR)/Dockerfile $(JAVA_DIR)/
+
+backend-logs:  ## Spring Backend 로그 (compose)
+	docker compose -f docker-compose.dev.yml logs -f spring-backend
+
+backend-shell:  ## Spring Backend 컨테이너 셸
+	docker compose -f docker-compose.dev.yml exec spring-backend sh
+
+deploy-staging:  ## Staging 배포 (4090 전체 스택)
+	rsync -avz --exclude='.gradle' --exclude='build' --exclude='.venv' --exclude='node_modules' \
+	  . $(REMOTE):~/services/$(PROJECT)/
+	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
+	  docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d'
+	@echo "✓ Staging: http://100.105.221.243:$(STAGE_PORT)"
+
+deploy-prod:  ## Production 배포 (수동 승인)
+	@read -p "배포 확인 (yes): " c && [ "$$c" = "yes" ] || exit 1
+	rsync -avz --exclude='.gradle' --exclude='build' --exclude='.venv' --exclude='node_modules' \
+	  . $(REMOTE):~/services/$(PROJECT)/
+	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
+	  docker compose --env-file .env.dev -f docker-compose.dev.yml up --build -d'
+
+rollback:  ## 이전 이미지로 롤백
+	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && \
+	  docker tag $(PROJECT)-backend:prod-prev $(PROJECT)-backend:prod && \
+	  docker compose -f docker-compose.dev.yml up -d'
+
+status:  ## 원격 서비스 상태
+	@ssh $(REMOTE) 'cd ~/services/$(PROJECT) && docker compose ps' 2>/dev/null
+
+logs:  ## 원격 전체 로그
+	ssh $(REMOTE) 'cd ~/services/$(PROJECT) && docker compose logs --tail 50'
+endif
+
+# ── Frontend (Next.js) ──────────────────────────────────────
+ifeq ($(HAS_FE),yes)
+.PHONY: fe-dev fe-build fe-logs
+
+fe-dev:  ## Frontend 개발 서버 (npm run dev)
+	cd frontend && npm run dev
+
+fe-build:  ## Frontend 빌드 (npm run build)
+	cd frontend && npm run build
+
+fe-logs:  ## Frontend 로그 (compose)
+	docker compose -f docker-compose.dev.yml logs -f frontend
+endif
+
+# ── C/C++ (cmake) ───────────────────────────────────────────
+ifeq ($(HAS_CPP),yes)
+BUILD_DIR ?= build
+.PHONY: cmake-configure cmake-build cmake-test cmake-clean
+
+cmake-configure:  ## CMake configure (Release)
+	cmake -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
+
+cmake-build: cmake-configure  ## CMake build
+	cmake --build $(BUILD_DIR) --parallel
+
+cmake-test: cmake-build  ## ctest 실행
+	cd $(BUILD_DIR) && ctest --output-on-failure
+
+cmake-clean:  ## build 디렉터리 삭제
+	rm -rf $(BUILD_DIR)
+endif
+
+# ── 인프라 보조 (pgvector) ──────────────────────────────────
+ifeq ($(HAS_PG),yes)
+.PHONY: db-shell db-reset
+
+db-shell:  ## psql 접속
+	docker compose -f docker-compose.dev.yml exec postgres \
+	  psql -U $${POSTGRES_USER:-dev} -d $${POSTGRES_DB:-app}
+
+db-reset:  ## DB 볼륨 초기화 후 재시작
+	docker compose -f docker-compose.dev.yml down -v
+	docker compose -f docker-compose.dev.yml up -d postgres
+endif
+
+# ── help ────────────────────────────────────────────────────
+.PHONY: help
+help:  ## 사용 가능한 타겟 목록
+	@echo ""
+	@echo "  PROJECT=$(PROJECT)"
+	@echo "  STACK=$(STACK)"
+	@echo ""
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort -u | \
+	  awk 'BEGIN {FS=":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+
+.DEFAULT_GOAL := help
